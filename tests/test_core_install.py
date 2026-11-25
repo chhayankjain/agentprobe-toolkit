@@ -121,6 +121,41 @@ def test_async_probe_works_without_optional_dependencies():
     assert result.returncode == 0, result.stderr
 
 
+def test_scripted_model_server_works_without_optional_dependencies():
+    result = run_minimal(
+        """
+        import json, sys, urllib.request
+        from agentprobe.testing import probe, script
+
+        def ask(base_url):
+            body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+            req = urllib.request.Request(base_url + "/chat/completions",
+                                         data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read())["choices"][0]["message"]["content"]
+
+        with probe() as p:
+            m = p.model(script.reply("hello"))
+            with m.serve() as server:
+                result = p.run(ask, server.base_url)
+            result.assert_answer_contains("hello").assert_model_calls_at_most(1)
+
+        try:
+            m.langchain()
+        except ImportError as exc:
+            assert "agentprobe-toolkit[langchain]" in str(exc), exc
+        else:
+            raise AssertionError("langchain() should need the [langchain] extra")
+        loaded = sorted({m.split(".")[0] for m in sys.modules} & set(BLOCKED))
+        assert not loaded, loaded
+        print("ok")
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
 def test_research_features_name_the_extra_to_install():
     result = run_minimal(
         """

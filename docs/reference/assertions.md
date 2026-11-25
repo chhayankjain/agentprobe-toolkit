@@ -28,6 +28,18 @@ result.assert_answer(lambda a: json.loads(a)["status"] == "pending", "status is 
 
 For recovery behaviour, the tool-call assertions below are sturdier still: they check what the agent did, not what it said.
 
+## Scripted-model assertions
+
+For a probe with a scripted model (`p.model(...)`). See [Script the model](../guides/scripted-model.md). *Unreleased.*
+
+| Assertion | Passes when |
+|---|---|
+| `assert_model_calls_at_most(n)` | At most *n* requests reached the scripted model, rejected ones included |
+| `assert_model_received(pattern, *, role=None)` | A message sent to the model matches *pattern* (case-insensitive substring, or a compiled regex) |
+| `assert_every_tool_call_answered()` | Every tool call the model returned came back as a `tool` message with the same ID in a later request |
+
+They are **unassessed**, not passed, when the run ended before the model could have seen the evidence (for example, right after it returned tool calls). They **fail** only when later requests reached the model without it. Called on a probe with no scripted model, they raise `ProbeError`.
+
 ## Tool-call assertions
 
 | Assertion | Passes when | Available |

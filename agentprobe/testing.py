@@ -21,6 +21,10 @@ Or as a fixture in ``conftest.py``::
         with _probe() as p:
             yield p
 
+To test what your agent does with model responses (bad tool arguments, unknown
+tools, loops, empty replies), script the model with ``p.model(...)`` and the
+steps in :mod:`agentprobe.script`.
+
 When the ``with`` block ends normally, the gate runs: the test fails unless every
 required scenario was exercised and every required assertion passed. A full pytest
 plugin with markers and reports is planned for v1.5.
@@ -28,6 +32,7 @@ plugin with markers and reports is planned for v1.5.
 
 from __future__ import annotations
 
+from agentprobe import script
 from agentprobe.faults import (
     ToolCallAPIError,
     ToolCallError,
@@ -46,6 +51,16 @@ from agentprobe.probe import (
     ProbeResult,
     ScenarioEvidence,
     ToolScenarios,
+)
+from agentprobe.scripted_model import (
+    ModelBudgetExceeded,
+    ModelCallAfterProbe,
+    ModelCallRecord,
+    ModelCallRejected,
+    ScriptedModel,
+    ScriptExhausted,
+    ScriptOverlap,
+    UnsupportedModelRequest,
 )
 
 
@@ -67,6 +82,16 @@ __all__ = [
     "AssertionRecord",
     "GateReport",
     "SCHEMA_VERSION",
+    # Scripted models: p.model(script.tool_call(...), script.reply(...))
+    "script",
+    "ScriptedModel",
+    "ModelCallRecord",
+    "ModelCallRejected",
+    "ModelBudgetExceeded",
+    "ScriptExhausted",
+    "ScriptOverlap",
+    "UnsupportedModelRequest",
+    "ModelCallAfterProbe",
     # The built-in faults, for agents and tests that catch them
     "ToolCallError",
     "ToolCallTimeout",

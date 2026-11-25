@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
-Fixes for ways a fault test could pass, or inject the wrong fault, without saying so.
+Fixes for ways a fault test could pass, or inject the wrong fault, without saying so, and scripted models for testing what an agent does with the model's responses.
+
+### Added
+- Scripted models (#131): `p.model(script.tool_call(...), script.reply(...), max_calls=...)` serves fixed model responses in order, to test what your agent does when the model sends bad or malformed tool arguments, calls an unknown tool, loops, or replies with nothing. Steps: `script.tool_call` (with `raw_args` for malformed JSON, delivered unchanged), `script.tool_calls`, `script.reply` and `script.repeat`. Two front ends: `model.langchain()`, a LangChain chat model (`[langchain]` extra), and `model.serve()`, a local OpenAI Chat Completions endpoint on 127.0.0.1 (standard library, non-streaming, one documented surface). The gate fails on an unused step, a request after the script ran out (`ScriptExhausted`), a request over `max_calls` (`ModelBudgetExceeded`), an overlapping request (`ScriptOverlap`) or an unsupported request, even when the agent catches the exception. New assertions: `assert_model_calls_at_most`, `assert_model_received` and `assert_every_tool_call_answered`, which are unassessed, never passed, when the run ended before the evidence could exist. `result.model_calls` records every request; the JSON report's schema version is now 1.3. A script tests the agent's control flow, not model intelligence
+- Guide: [Script the model](https://agentprobe-toolkit.pages.dev/guides/scripted-model/)
+
+### Changed
+- `ProbeError` is now defined in `agentprobe.errors` (still importable from `agentprobe.testing` and `agentprobe.probe`; it is the same class)
 
 ### Fixed
 - `p.run()` and `p.arun()` on a probe that was never entered (no `with probe() as p:`) ran the agent with no faults and no gate, so the test could pass without testing anything. They now raise `ProbeError`
