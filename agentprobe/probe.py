@@ -66,6 +66,7 @@ from typing import Any
 from agentprobe._otel import get_tracer
 from agentprobe._text import message_text
 from agentprobe._threads import start_daemon
+from agentprobe.errors import ProbeError
 from agentprobe.faults import (
     ToolCallAPIError,
     ToolCallError,
@@ -73,8 +74,10 @@ from agentprobe.faults import (
     ToolCallRateLimited,
     ToolCallTimeout,
 )
+from agentprobe.script import Step
+from agentprobe.scripted_model import ModelCallRecord, ScriptedModel
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 _tracer = get_tracer(__name__)
 
@@ -85,10 +88,6 @@ _tracer = get_tracer(__name__)
 _ACTIVE_WRAPPERS: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
     "agentprobe_active_wrappers", default=frozenset()
 )
-
-
-class ProbeError(Exception):
-    """Misuse of the probe API (bad tool, bad scenario, wrong lifecycle)."""
 
 
 class ProbeGateError(AssertionError):
@@ -773,6 +772,11 @@ class ProbeResult:
     cancelled: bool = False  # cancellation confirmed (async agents only)
     cancel_requested: bool = False  # cancellation was requested at the deadline
     assertions: list[AssertionRecord] = field(default_factory=list)
+    #: Requests to scripted models (``p.model(...)``), snapshot at the end of the run.
+    model_calls: list[ModelCallRecord] = field(default_factory=list)
+    #: Gate failures from scripted models: rejected requests and unused steps.
+    model_problems: list[str] = field(default_factory=list)
+    scripted_models: int = 0
 
     # ---- inferred (heuristics) ------------------------------------------------
 
@@ -1130,6 +1134,124 @@ class ProbeResult:
             status = "fail"
         return self._record_call_check(name, status, f"observed {count} call(s)", calls, required)
 
+    # ---- scripted-model assertions -----------------------------------------------
+
+    def _model_requests(self) -> list[ModelCallRecord]:
+        if self.scripted_models == 0:
+            raise ProbeError(
+                "this assertion needs a scripted model: create one with p.model(...) "
+                "and give it to your agent"
+            )
+        return [r for r in self.model_calls if not r.after_probe_end]
+
+    def assert_model_calls_at_most(self, n: int, *, required: bool = True) -> ProbeResult:
+        """At most *n* requests reached the scripted model(s), rejected ones included."""
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            raise ProbeError(f"model call count must be a non-negative integer, got {n!r}")
+        requests = self._model_requests()
+        served = sum(1 for r in requests if r.outcome == "served")
+        name = f"model called at most {n} time(s)"
+        message = f"{len(requests)} request(s), {served} served"
+        if len(requests) > n:
+            self._record(name, "fail", message, required)
+        elif self.still_running:
+            self._record(name, "unassessed", f"{message}; the agent was still running", required)
+        else:
+            self._record(name, "pass", message, required)
+        return self
+
+    def _ended_before_next_request(self, requests: list[ModelCallRecord]) -> str | None:
+        """Why later evidence can't exist: the run ended right after a response
+        that asked the agent to run tools. None if a later request was possible
+        to observe and didn't happen for another reason."""
+        if self.still_running or self.cancelled:
+            return "the agent was still running, so later model requests can't be ruled out"
+        if not requests:
+            return "the scripted model was never called"
+        last = requests[-1]
+        if last.outcome == "served" and last.returned_tool_calls:
+            return (
+                f"the run ended right after model request {last.index} returned tool "
+                "call(s); no later request reached the model, so its tool results were "
+                "never observable"
+            )
+        return None
+
+    def assert_model_received(
+        self, pattern: str | re.Pattern[str], *, role: str | None = None, required: bool = True
+    ) -> ProbeResult:
+        """Some message sent to the scripted model matches *pattern* (a
+        case-insensitive substring, or a compiled regex). ``role`` limits the search
+        to ``"user"``, ``"assistant"``, ``"tool"`` or ``"system"`` messages.
+
+        Unassessed (not passed) when the run ended before the model could have
+        received it; fails when later requests happened without it."""
+        requests = self._model_requests()
+        shown = pattern.pattern if isinstance(pattern, re.Pattern) else pattern
+        name = f"model received {shown!r}" + (f" in a {role} message" if role else "")
+        for r in requests:
+            for m in r.messages:
+                if role is not None and m["role"] != role:
+                    continue
+                text = m["content"] or ""
+                hit = (
+                    pattern.search(text) is not None
+                    if isinstance(pattern, re.Pattern)
+                    else pattern.lower() in text.lower()
+                )
+                if hit:
+                    self._record(
+                        name, "pass", f"in model request {r.index} ({m['role']})", required
+                    )
+                    return self
+        why = self._ended_before_next_request(requests)
+        if why is not None:
+            self._record(name, "unassessed", why, required)
+        else:
+            self._record(name, "fail", f"not in any of {len(requests)} model request(s)", required)
+        return self
+
+    def assert_every_tool_call_answered(self, *, required: bool = True) -> ProbeResult:
+        """Every tool call the scripted model returned came back to the model as a
+        ``tool`` message with the same tool-call ID, in a later request.
+
+        The model only sees tool results when the agent makes its next request, so
+        a call with no later request is unassessed, not passed. This checks tool-call
+        completion only, not whether the task was done correctly."""
+        requests = self._model_requests()
+        name = "every tool call answered"
+        issued = [
+            (r, c["id"]) for r in requests if r.outcome == "served" for c in r.returned_tool_calls
+        ]
+        if not issued:
+            why = self._ended_before_next_request(requests) or "no tool calls were returned"
+            self._record(name, "unassessed", f"nothing to check: {why}", required)
+            return self
+        missing: list[str] = []
+        unobservable: list[str] = []
+        for r, cid in issued:
+            later = [x for x in requests if x.model == r.model and x.index > r.index]
+            answered = any(
+                m["role"] == "tool" and m["tool_call_id"] == cid for x in later for m in x.messages
+            )
+            if answered:
+                continue
+            (missing if later else unobservable).append(f"{cid} (request {r.index})")
+        if missing:
+            self._record(
+                name,
+                "fail",
+                "later model requests never included a tool result for: " + ", ".join(missing),
+                required,
+            )
+        elif unobservable or self.still_running or self.cancelled:
+            why = self._ended_before_next_request(requests) or "the run ended"
+            ids = ", ".join(unobservable) if unobservable else "later calls"
+            self._record(name, "unassessed", f"{ids}: {why}", required)
+        else:
+            self._record(name, "pass", f"{len(issued)} tool call(s) answered", required)
+        return self
+
     def assert_scenarios_exercised(self) -> ProbeResult:
         """Every required scenario fired (also enforced when the probe closes)."""
         missing = [s for s in self.scenarios if s.required and s.status != "exercised"]
@@ -1149,7 +1271,9 @@ class ProbeResult:
     def gate(self) -> GateReport:
         """Pass only if every required scenario was exercised and every required
         assertion passed. Unassessed, error and missing evidence never pass."""
-        return _gate(self.scenarios, self.assertions, self.known_tools, self.calls)
+        return _gate(
+            self.scenarios, self.assertions, self.known_tools, self.calls, self.model_problems
+        )
 
     # ---- presentation ----------------------------------------------------------
 
@@ -1188,6 +1312,16 @@ class ProbeResult:
                 f"    [{s.status}] {s.description} ({req}; injected {s.injected}/{planned}, "
                 f"{s.tool_calls} call(s) to {s.tool})"
             )
+        if self.scripted_models:
+            lines.append("  model calls:" if self.model_calls else "  model calls: none")
+            for r in self.model_calls:
+                if r.outcome == "served":
+                    what = f"served step {r.step}: {r.step_description}"
+                else:
+                    what = f"REJECTED ({r.outcome}): {r.detail}"
+                lines.append(f"    model {r.model}, request {r.index}: {what}")
+            for problem in self.model_problems:
+                lines.append(f"    problem: {problem}")
         lines.append("Asserted")
         if not self.assertions:
             lines.append("  (no assertions yet)")
@@ -1221,6 +1355,8 @@ class ProbeResult:
                 "cancelled": self.cancelled,
                 "calls": [c.to_dict() for c in sorted(self.calls, key=lambda c: c.index)],
                 "scenarios": [dataclasses.asdict(s) for s in self.scenarios],
+                "model_calls": [r.to_dict() for r in self.model_calls],
+                "model_problems": list(self.model_problems),
             },
             "asserted": [dataclasses.asdict(a) for a in self.assertions],
             "inferred": {
@@ -1239,8 +1375,9 @@ def _gate(
     assertions: list[AssertionRecord],
     known_tools: list[str],
     calls: list[CallRecord],
+    model_problems: Sequence[str] = (),
 ) -> GateReport:
-    failures: list[str] = []
+    failures: list[str] = list(model_problems)
     req_s = [s for s in scenarios if s.required]
     for s in req_s:
         if s.status != "exercised":
@@ -1316,6 +1453,7 @@ class Probe:
         self._closed = False
         self._enforce = enforce
         self._results: list[ProbeResult] = []
+        self._models: list[ScriptedModel] = []
 
     # ---- lifecycle --------------------------------------------------------------
 
@@ -1344,6 +1482,9 @@ class Probe:
         with self._lock:
             self._active = False
             self._closed = True
+            models = list(self._models)
+        for m in models:
+            m._close()
 
     @property
     def active(self) -> bool:
@@ -1404,6 +1545,43 @@ class Probe:
     def scenarios(self) -> list[ScenarioEvidence]:
         with self._lock:
             return [_evidence(r, self._per_tool.get(r.tool, 0)) for r in self._rules]
+
+    # ---- scripted models ---------------------------------------------------------
+
+    def model(
+        self, *steps: Step, max_calls: int | None = None, allow_unused: bool = False
+    ) -> ScriptedModel:
+        """A scripted model for this probe: each request gets the next step.
+
+        Give it to your agent with ``.langchain()`` (a LangChain chat model) or
+        ``.serve()`` (a local OpenAI Chat Completions endpoint). ``max_calls`` caps
+        the requests served; ``script.repeat(...)`` without ``times`` requires it.
+
+        The gate fails if a request is rejected (budget, exhausted script, overlap,
+        unsupported) or, unless ``allow_unused=True``, if a step is never used.
+        A script tests your agent's control flow, not model intelligence.
+        """
+        with self._lock:
+            if self._closed:
+                raise ProbeError("cannot add a scripted model to a closed probe")
+            m = ScriptedModel(
+                tuple(steps),
+                max_calls=max_calls,
+                allow_unused=allow_unused,
+                model_id=len(self._models) + 1,
+            )
+            self._models.append(m)
+            return m
+
+    def _model_calls(self) -> list[ModelCallRecord]:
+        with self._lock:
+            models = list(self._models)
+        return [r for m in models for r in m.calls]
+
+    def _model_problems(self) -> list[str]:
+        with self._lock:
+            models = list(self._models)
+        return [p for m in models for p in m.problems()]
 
     # ---- wrapping ------------------------------------------------------------------
 
@@ -1891,6 +2069,9 @@ class Probe:
             calls=self.calls,  # frozen snapshot, pending calls included
             scenarios=self.scenarios(),
             known_tools=list(self._known_tools),
+            model_calls=self._model_calls(),
+            model_problems=self._model_problems(),
+            scripted_models=len(self._models),
         )
         with self._lock:
             self._results.append(result)
@@ -1904,7 +2085,13 @@ class Probe:
         assertion passed in every result."""
         with self._lock:
             assertions = [a for r in self._results for a in r.assertions]
-        return _gate(self.scenarios(), assertions, list(self._known_tools), self.calls)
+        return _gate(
+            self.scenarios(),
+            assertions,
+            list(self._known_tools),
+            self.calls,
+            self._model_problems(),
+        )
 
 
 async def _await(aw: Any) -> Any:

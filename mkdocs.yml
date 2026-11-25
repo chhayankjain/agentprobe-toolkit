@@ -62,6 +62,7 @@ nav:
       - Test wrong or stale tool data: guides/wrong-data.md
       - LangGraph tool errors: guides/langgraph-tool-errors.md
       - Inject the exceptions your code handles: guides/real-exceptions.md
+      - Script the model: guides/scripted-model.md
       - Run fault tests in CI: guides/ci.md
   - Reference:
       - Scenarios: reference/scenarios.md

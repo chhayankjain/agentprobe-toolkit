@@ -8,6 +8,14 @@ how the agent handles faults.
 from __future__ import annotations
 
 
+class ProbeError(Exception):
+    """Misuse of the probe API (bad tool, bad scenario, wrong lifecycle).
+
+    Importable from :mod:`agentprobe.testing`; defined here so every module of the
+    testing API can raise it without importing the probe.
+    """
+
+
 class HarnessLimitation(Exception):
     """The harness cannot faithfully run this trial (an adapter limitation)."""
 
@@ -29,4 +37,4 @@ class ParallelToolCallsUnsupported(HarnessLimitation):
         )
 
 
-__all__ = ["HarnessLimitation", "ParallelToolCallsUnsupported"]
+__all__ = ["HarnessLimitation", "ParallelToolCallsUnsupported", "ProbeError"]
