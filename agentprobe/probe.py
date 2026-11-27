@@ -1495,12 +1495,12 @@ class Probe:
         """Snapshot of calls that started while the probe was active, in
         invocation order. Pending calls are included."""
         with self._lock:
-            return [dataclasses.replace(c) for c in self._calls]
+            return [_snapshot(c) for c in self._calls]
 
     @property
     def late_calls(self) -> list[CallRecord]:
         with self._lock:
-            return [dataclasses.replace(c) for c in self._late_calls]
+            return [_snapshot(c) for c in self._late_calls]
 
     # ---- scenarios ---------------------------------------------------------------
 
@@ -2092,6 +2092,13 @@ class Probe:
             self.calls,
             self._model_problems(),
         )
+
+
+def _snapshot(c: CallRecord) -> CallRecord:
+    """A copy whose argument snapshots are independent, so editing a result can't
+    rewrite the probe's evidence. The live objects (raw_args/raw_kwargs) are the
+    caller's and are deliberately not copied."""
+    return dataclasses.replace(c, args=copy.deepcopy(c.args), kwargs=copy.deepcopy(c.kwargs))
 
 
 async def _await(aw: Any) -> Any:

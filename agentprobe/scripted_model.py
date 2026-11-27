@@ -27,6 +27,7 @@ cope?), not model intelligence.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import threading
 from dataclasses import dataclass, field
@@ -37,6 +38,10 @@ from agentprobe.script import Step, ToolCall
 
 if TYPE_CHECKING:
     from agentprobe._scripted_server import ScriptedServer
+
+#: Prefix of generated tool-call ids. Explicit ids may not use it, so a generated
+#: id can never collide with one from the script.
+_GENERATED_PREFIX = "agentprobe_call_"
 
 __all__ = [
     "ModelBudgetExceeded",
@@ -169,7 +174,23 @@ class ScriptedModel:
     ) -> None:
         if not steps:
             raise ProbeError("a scripted model needs at least one step")
+        seen_ids: dict[str, int] = {}
         for i, s in enumerate(steps, start=1):
+            for c in s.calls if isinstance(s, Step) else ():
+                if c.id is None:
+                    continue
+                if c.id.startswith(_GENERATED_PREFIX):
+                    raise ProbeError(
+                        f"step {i}: tool-call id {c.id!r} uses the prefix "
+                        f"{_GENERATED_PREFIX!r}, which is reserved for generated ids"
+                    )
+                if c.id in seen_ids and seen_ids[c.id] != i:
+                    raise ProbeError(
+                        f"steps {seen_ids[c.id]} and {i} both use tool-call id {c.id!r}; "
+                        "every tool call the model returns needs a unique id, or an "
+                        "answer to one call could be mistaken for an answer to another"
+                    )
+                seen_ids[c.id] = i
             if not isinstance(s, Step):
                 raise ProbeError(
                     f"step {i} is not a script step; build steps with script.tool_call, "
@@ -290,7 +311,7 @@ class ScriptedModel:
                 self._cursor += 1
             self._served += 1
             calls = tuple(
-                (c.id or f"call_ap{self._id}_{index}_{k}", c)
+                (c.id or f"{_GENERATED_PREFIX}{self._id}_{index}_{k}", c)
                 for k, c in enumerate(step.calls, start=1)
             )
             served = Served(content=step.text if step.kind == "reply" else "", tool_calls=calls)
@@ -305,7 +326,12 @@ class ScriptedModel:
                 step_description=step.describe(),
                 returned_content=served.content,
                 returned_tool_calls=[
-                    {"id": cid, "name": c.name, "args": c.args, "raw_args": c.raw_args}
+                    {
+                        "id": cid,
+                        "name": c.name,
+                        "args": copy.deepcopy(c.args),
+                        "raw_args": c.raw_args,
+                    }
                     for cid, c in calls
                 ],
             )
@@ -352,7 +378,8 @@ class ScriptedModel:
     def calls(self) -> list[ModelCallRecord]:
         """Snapshot of every request, in arrival order."""
         with self._lock:
-            return [dataclasses.replace(r) for r in self._records]
+            # Deep copies: editing a report must never rewrite the observations.
+            return [copy.deepcopy(r) for r in self._records]
 
     def problems(self) -> list[str]:
         """Gate failures: rejected requests (except late ones) and unused steps."""

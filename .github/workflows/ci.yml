@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, including ones stacked on another PR's branch, gets the
+  # full checks before it can reach main.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read

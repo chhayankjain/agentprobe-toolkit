@@ -156,7 +156,11 @@ The test fails, at the end of the `with` block, if:
 | The agent asked for a response after the last step | `ScriptExhausted` |
 | The agent asked for more than `max_calls` responses | `ModelBudgetExceeded` |
 | A request arrived while another was still being served. Scripts are sequential, and concurrent model calls aren't supported. | `ScriptOverlap` |
-| The server received a request it doesn't support | `UnsupportedModelRequest` (HTTP 400) |
+| A request the front end doesn't support: streaming (`stream`/`astream` through LangChain, `stream: true` over HTTP), a request with no messages, an invalid Chat Completions body, another endpoint or HTTP method | `UnsupportedModelRequest` (HTTP 400, or 501 for methods the server can't dispatch) |
+
+An invalid request is rejected before a step is chosen, so a broken client integration can't use up the script and look like it works. The server checks for a `model`, a non-empty `messages` list with known roles, a `tool_call_id` on tool messages, complete assistant tool calls, and function tools with names.
+
+Tool-call IDs are unique within a script. Two steps can't use the same explicit `id`, and explicit IDs can't start with `agentprobe_call_`, the prefix used for generated ones. Otherwise an answer to one call could be mistaken for an answer to another.
 
 Each exception is recorded **before** it is raised, so the gate fails even if your agent catches it. All of them subclass `ModelCallRejected` (an `Exception`). They are harness failures, not simulated provider errors.
 
@@ -174,11 +178,12 @@ Requests that arrive after the probe has closed (for example from an agent still
 
 **Unassessed is not passed**, and it fails a required assertion. An assertion only **fails** when there is evidence of absence: later requests reached the model and the expected message wasn't in them. `assert_every_tool_call_answered` checks that tool calls were completed. It says nothing about whether the task was done correctly.
 
-`result.model_calls` holds every request. Each record includes the outcome, the step served, the messages received (role, content, name, tool-call IDs), the tools offered and the tool calls returned. The records are also in `result.to_dict()`.
+`result.model_calls` holds every request, as copies: editing them never changes the recorded evidence. Each record includes the outcome, the step served, the messages received (role, content, name, tool-call IDs), the tools offered and the tool calls returned. The records are also in `result.to_dict()`.
 
 ## Limits
 
 - Scripts are sequential. Responses are not matched to requests (replaying recorded responses is planned in [#105](https://github.com/chhayankjain/agentprobe-toolkit/issues/105)).
-- No streaming, and only one API surface for the server.
+- No streaming. Through LangChain this includes a LangGraph graph run with `stream_mode="messages"`, which streams the model; `invoke`, and the other stream modes, work.
+- Only one API surface for the server.
 - One scripted model serves whoever calls it. If your agent uses the same model object for several roles, such as an agent, a checker and a summarizer, all of their calls consume steps in arrival order.
 - Faults at the model provider, like rate limits and timeouts, aren't covered yet ([#106](https://github.com/chhayankjain/agentprobe-toolkit/issues/106)).
