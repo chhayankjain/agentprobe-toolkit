@@ -13,7 +13,7 @@ def answer(question, tools=TOOLS, *, broken=False): ...
 ## 2. Install
 
 ```bash
-pip install "agentprobe-toolkit>=1.5" pytest
+pip install "agentprobe-toolkit>=1.6" pytest
 ```
 
 This tutorial needs AgentProbe 1.5 or later. No model or API key is needed for this tutorial.

@@ -15,7 +15,7 @@ Your agent's tools will time out, hit rate limits and return bad data. AgentProb
 A test fails unless every fault you declared **actually fired**. An agent that skips the tool or answers from a cache can't pass a fault test by accident.
 
 ```bash
-pip install "agentprobe-toolkit>=1.5" pytest
+pip install "agentprobe-toolkit>=1.6" pytest
 ```
 
 ```py
@@ -34,7 +34,7 @@ def test_admits_failure_when_payment_service_is_down():
         result.assert_not_called("send_receipt")  # no receipt if unconfirmed
 ```
 
-Nothing is mocked except the fault: your agent runs for real, with real tools, and AgentProbe only steps in at the tool boundary. No model or API key is needed for the examples.
+Nothing is mocked except the fault: your agent runs for real, with real tools, and AgentProbe only steps in at the tool boundary. To test what the agent does with the model's responses (bad tool arguments, loops, empty replies), you can also [script the model](guides/scripted-model.md). No model or API key is needed for the examples.
 
 ## Where to go next
 

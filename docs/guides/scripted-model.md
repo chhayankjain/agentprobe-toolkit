@@ -11,7 +11,7 @@ Tool faults are half of what breaks agents. The other half starts with the **mod
 - it keeps calling tools, or never calls one, so the loop never ends;
 - it replies with empty text.
 
-A scripted model lets you write a test for each of these. You list the responses, AgentProbe serves them in order, and the probe's gate checks that the script was actually used. *Unreleased: on `main`, not yet in a release.*
+A scripted model lets you write a test for each of these. You list the responses, AgentProbe serves them in order, and the probe's gate checks that the script was actually used. *Since 1.6.*
 
 !!! note "What a script tests"
     A script tests your agent's **control flow**: *if* the model responds this way, does the agent handle it? It says nothing about model intelligence, or about whether a given model *will* respond this way. For that you still need runs with a real model.

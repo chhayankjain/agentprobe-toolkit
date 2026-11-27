@@ -12,7 +12,7 @@ Core API: `from agentprobe.testing import probe`; `with probe() as p:`; `tools =
 - [Test wrong or stale tool data](https://agentprobe-toolkit.pages.dev/guides/wrong-data/)
 - [LangGraph tool errors](https://agentprobe-toolkit.pages.dev/guides/langgraph-tool-errors/): ToolNode re-raises tool exceptions by default
 - [Inject the exceptions your code handles](https://agentprobe-toolkit.pages.dev/guides/real-exceptions/)
-- [Script the model](https://agentprobe-toolkit.pages.dev/guides/scripted-model/): test what the agent does with bad tool arguments, unknown tools, loops and empty replies (`p.model(script...)`, unreleased)
+- [Script the model](https://agentprobe-toolkit.pages.dev/guides/scripted-model/): test what the agent does with bad tool arguments, unknown tools, loops and empty replies (`p.model(script...)`, since 1.6)
 - [Run fault tests in CI](https://agentprobe-toolkit.pages.dev/guides/ci/)
 
 ## Reference
