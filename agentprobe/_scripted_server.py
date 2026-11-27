@@ -63,6 +63,64 @@ def _normalize(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+_ROLES = {"system", "developer", "user", "assistant", "tool"}
+
+
+def _invalid(body: dict[str, Any]) -> str | None:
+    """Why *body* isn't a valid Chat Completions request, or None. Checked before a
+    step is chosen, so a broken client integration can't consume the script."""
+    if not isinstance(body.get("model"), str) or not body["model"]:
+        return "invalid request: 'model' must be a non-empty string"
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return "invalid request: 'messages' must be a non-empty list"
+    for i, m in enumerate(messages):
+        where = f"invalid request: messages[{i}]"
+        if not isinstance(m, dict):
+            return f"{where} must be an object"
+        role = m.get("role")
+        if role not in _ROLES:
+            return f"{where}.role must be one of {sorted(_ROLES)}, got {role!r}"
+        content = m.get("content")
+        calls = m.get("tool_calls")
+        if role == "assistant" and calls is not None:
+            if not isinstance(calls, list) or not calls:
+                return f"{where}.tool_calls must be a non-empty list"
+            for j, c in enumerate(calls):
+                fn = c.get("function") if isinstance(c, dict) else None
+                if (
+                    not isinstance(c, dict)
+                    or not isinstance(c.get("id"), str)
+                    or not isinstance(fn, dict)
+                    or not isinstance(fn.get("name"), str)
+                    or not isinstance(fn.get("arguments"), str)
+                ):
+                    return (
+                        f"{where}.tool_calls[{j}] needs an id and a function with a name "
+                        "and an arguments string"
+                    )
+            if content is not None and not isinstance(content, (str, list)):
+                return f"{where}.content must be a string, a list of parts or null"
+        elif not isinstance(content, (str, list)):
+            return f"{where}.content must be a string or a list of parts"
+        if role == "tool" and not isinstance(m.get("tool_call_id"), str):
+            return f"{where} (a tool message) needs a tool_call_id string"
+    tools = body.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list):
+            return "invalid request: 'tools' must be a list"
+        for i, t in enumerate(tools):
+            fn = t.get("function") if isinstance(t, dict) else None
+            if (
+                not isinstance(t, dict)
+                or t.get("type") != "function"
+                or not isinstance(fn, dict)
+                or not isinstance(fn.get("name"), str)
+            ):
+                return f"invalid request: tools[{i}] must be a function tool with a name"
+    return None
+
+
 def _tool_names(raw: Any) -> list[str]:
     names = []
     for t in raw or []:
@@ -169,6 +227,22 @@ def _handler_for(script: ScriptedModel) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(data)
 
+        def send_error(
+            self, code: int, message: str | None = None, explain: str | None = None
+        ) -> None:
+            # Every request the handler can't dispatch (HEAD, OPTIONS, unknown methods,
+            # malformed HTTP) ends here: record it so it fails the gate.
+            command = getattr(self, "command", None) or "?"
+            path = getattr(self, "path", None) or "?"
+            script._reject_unsupported(
+                [],
+                [],
+                "server",
+                f"{command} {path} is not supported (HTTP {code}: {message or ''}); the "
+                f"scripted server implements only POST {_PATH} (OpenAI Chat Completions)",
+            )
+            super().send_error(code, message, explain)
+
         def _reject(self, exc: ModelCallRejected) -> None:
             self._send(
                 400,
@@ -208,6 +282,8 @@ def _handler_for(script: ScriptedModel) -> type[BaseHTTPRequestHandler]:
                 return self._unsupported(error or "the request body must be a JSON object")
             if body.get("stream"):
                 return self._unsupported("streaming is not supported (send stream=false)", body)
+            if (problem := _invalid(body)) is not None:
+                return self._unsupported(problem, body)
             n = body.get("n", 1)
             if n not in (None, 1):
                 return self._unsupported(f"n={n!r} is not supported (one choice only)", body)

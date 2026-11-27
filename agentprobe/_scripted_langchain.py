@@ -7,7 +7,7 @@ extra). Not streaming.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
@@ -19,7 +19,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ConfigDict, Field
@@ -117,11 +117,51 @@ class ScriptedChatModel(BaseChatModel):
 
     def _serve(self, messages: list[BaseMessage], kwargs: dict[str, Any]) -> ChatResult:
         normalized = [_normalize(m) for m in messages]
+        if not normalized:
+            raise self._unsupported(messages, kwargs, "the request has no messages")
         _, served = self.script._begin(normalized, _tool_names(kwargs.get("tools")), "langchain")
         try:
             return ChatResult(generations=[ChatGeneration(message=_ai_message(served))])
         finally:
             self.script._end()
+
+    def _unsupported(
+        self, messages: list[BaseMessage], kwargs: dict[str, Any], detail: str
+    ) -> Exception:
+        """Record an unsupported operation (it fails the gate) and return the
+        exception to raise."""
+        return self.script._reject_unsupported(
+            [_normalize(m) for m in messages],
+            _tool_names(kwargs.get("tools")),
+            "langchain",
+            detail,
+        )
+
+    # Streaming is not supported. LangChain would otherwise fall back to a normal
+    # call and serve the step silently, so a streaming agent could look tested.
+    _NO_STREAM = (
+        "streaming is not supported: the scripted model serves whole responses. "
+        "Use invoke/ainvoke (for a LangGraph graph, a stream_mode other than 'messages')"
+    )
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        raise self._unsupported(messages, kwargs, self._NO_STREAM)
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        raise self._unsupported(messages, kwargs, self._NO_STREAM)
+        yield  # pragma: no cover - makes this an async generator
 
     def _generate(
         self,

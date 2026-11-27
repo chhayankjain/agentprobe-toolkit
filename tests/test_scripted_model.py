@@ -6,6 +6,8 @@ for the intended reason, next to the case that passes.
 
 from __future__ import annotations
 
+import asyncio
+import http.client
 import json
 import socket
 import threading
@@ -24,6 +26,7 @@ from agentprobe.testing import (
     ProbeGateError,
     ScriptExhausted,
     ScriptOverlap,
+    UnsupportedModelRequest,
     probe,
     script,
 )
@@ -515,7 +518,17 @@ class TestServerFrontEnd:
                         "model": "m",
                         "messages": [
                             {"role": "user", "content": "hi"},
-                            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {"name": "lookup", "arguments": "{}"},
+                                    }
+                                ],
+                            },
                             {"role": "tool", "tool_call_id": "c1", "content": "shipped"},
                         ],
                     },
@@ -604,3 +617,149 @@ def test_to_dict_includes_model_calls():
     assert [c["outcome"] for c in calls] == ["served", "served"]
     assert calls[0]["returned_tool_calls"][0]["raw_args"] == "{"
     assert "model calls:" in r.summary()
+
+
+# ---------------------------------------------------------------------------
+# Review findings on #132: each was a false pass before the fix
+# ---------------------------------------------------------------------------
+
+
+class TestToolCallIdsAreUnique:
+    def test_same_explicit_id_in_two_steps_is_rejected(self):
+        """Before: answering the first call and omitting the second passed, because
+        the old result looked like an answer to the new call."""
+        with probe(enforce=False) as p, pytest.raises(ProbeError, match="both use tool-call id"):
+            p.model(
+                script.tool_call("lookup", {"order_id": "1"}, id="dup"),
+                script.tool_call("lookup", {"order_id": "2"}, id="dup"),
+                script.reply("x"),
+            )
+
+    def test_explicit_id_cannot_use_the_generated_prefix(self):
+        with probe(enforce=False) as p, pytest.raises(ProbeError, match="reserved"):
+            p.model(script.tool_call("lookup", id="agentprobe_call_1_1_1"), script.reply("x"))
+
+    def test_generated_ids_use_the_reserved_prefix_and_are_unique(self):
+        with probe(enforce=False) as p:
+            m = p.model(
+                script.repeat(script.tool_call("lookup", {"order_id": "1"}), times=3),
+                script.reply("x"),
+            )
+            r = p.run(lambda q: agent_loop(m.langchain(), q), "x")
+        ids = [c["id"] for rec in r.model_calls for c in rec.returned_tool_calls]
+        assert len(ids) == len(set(ids)) == 3
+        assert all(i.startswith("agentprobe_call_") for i in ids)
+
+
+class TestUnsupportedOperationsAreRecorded:
+    def test_langchain_stream_is_rejected(self):
+        """Before: stream() fell back to a normal call and served the step silently."""
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"), allow_unused=True)
+            with pytest.raises(UnsupportedModelRequest, match="streaming is not supported"):
+                list(m.langchain().stream("hi"))
+        assert [c.outcome for c in m.calls] == ["unsupported"]
+        assert any("streaming is not supported" in f for f in gate_failures(p))
+
+    def test_langchain_astream_is_rejected(self):
+        async def consume(llm: Any) -> None:
+            async for _ in llm.astream("hi"):
+                pass
+
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"), allow_unused=True)
+            with pytest.raises(UnsupportedModelRequest):
+                asyncio.run(consume(m.langchain()))
+        assert [c.outcome for c in m.calls] == ["unsupported"]
+        assert not p.gate().passed
+
+    def test_langchain_request_without_messages_is_rejected(self):
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"), allow_unused=True)
+            with pytest.raises(UnsupportedModelRequest, match="no messages"):
+                m.langchain().invoke([])
+        assert not p.gate().passed
+
+    @pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "FOO"])
+    def test_http_methods_the_handler_cannot_dispatch(self, method):
+        """Before: HEAD got a 501 with no record, and the gate passed."""
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"), allow_unused=True)
+            with m.serve() as s:
+                conn = http.client.HTTPConnection(s.host, s.port, timeout=5)
+                conn.request(method, "/v1/chat/completions")
+                status = conn.getresponse().status
+                conn.close()
+        assert status == 501
+        assert [c.outcome for c in m.calls] == ["unsupported"]
+        assert any(f"{method} /v1/chat/completions is not supported" in f for f in gate_failures(p))
+
+    def test_malformed_http_is_recorded(self):
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"), allow_unused=True)
+            with m.serve() as s:
+                with socket.create_connection((s.host, s.port), timeout=5) as sock:
+                    sock.sendall(b"NOT HTTP AT ALL\r\n\r\n")
+                    sock.recv(1024)
+        assert [c.outcome for c in m.calls] == ["unsupported"]
+        assert not p.gate().passed
+
+
+class TestInvalidRequestsDoNotConsumeTheScript:
+    @pytest.mark.parametrize(
+        "body, match",
+        [
+            ({}, "'model' must be a non-empty string"),
+            ({"messages": [{"role": "user", "content": "hi"}]}, "'model'"),
+            ({"model": "m", "messages": []}, "'messages' must be a non-empty list"),
+            ({"model": "m", "messages": [{"role": "robot", "content": "x"}]}, "role must be"),
+            ({"model": "m", "messages": [{"role": "user"}]}, "content must be"),
+            (
+                {"model": "m", "messages": [{"role": "tool", "content": "r"}]},
+                "needs a tool_call_id",
+            ),
+            (
+                {
+                    "model": "m",
+                    "messages": [
+                        {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]}
+                    ],
+                },
+                "needs an id and a function",
+            ),
+            ({**USER, "tools": [{"type": "function"}]}, "must be a function tool"),
+        ],
+    )
+    def test_invalid_body_is_rejected_before_a_step_is_chosen(self, body, match):
+        """Before: posting {} returned 200, consumed the reply and passed the gate."""
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                status, resp = post(s.base_url, body)
+        assert status == 400 and match in resp["error"]["message"]
+        assert [c.outcome for c in m.calls] == ["unsupported"]
+        failures = gate_failures(p)
+        assert any(match in f for f in failures)
+        assert any("step 1" in f and "unused" in f for f in failures)  # not consumed
+
+
+class TestEvidenceCannotBeRewritten:
+    def test_editing_model_calls_leaves_the_record_unchanged(self):
+        """Before: result.model_calls shared nested dicts with the model's records."""
+        with probe(enforce=False) as p:
+            m = p.model(script.tool_call("lookup", {"order_id": "1"}), script.reply("x"))
+            r = p.run(lambda q: agent_loop(m.langchain(), q), "original")
+        r.model_calls[0].messages[0]["content"] = "rewritten"
+        r.model_calls[0].returned_tool_calls[0]["args"]["order_id"] = "rewritten"
+        fresh = m.calls[0]
+        assert fresh.messages[0]["content"] == "original"
+        assert fresh.returned_tool_calls[0]["args"] == {"order_id": "1"}
+
+    def test_editing_tool_call_snapshots_leaves_the_record_unchanged(self):
+        """The same gap existed for tool calls (result.calls)."""
+        with probe(enforce=False) as p:
+            tools = p.wrap({"f": lambda x: "ok"})
+            tools["f"]({"k": [1]})
+            r = p.run(lambda q: "x", "q")
+        r.calls[0].args[0]["k"].append("rewritten")
+        assert p.calls[0].args == [{"k": [1]}]
