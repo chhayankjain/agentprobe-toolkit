@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from agentprobe.scripted_model import ScriptedModel
 
 _PATH = "/v1/chat/completions"
+_MAX_BODY = 10 * 1024 * 1024  # bytes; larger requests are rejected unread
+_SOCKET_TIMEOUT = 10.0  # seconds a client may stall mid-request
 
 
 def _text(content: Any) -> str:
@@ -43,10 +45,12 @@ def _normalize(raw: Any) -> list[dict[str, Any]]:
     for m in raw:
         if not isinstance(m, dict):
             continue
-        role = str(m.get("role", "unknown"))
+        role = m.get("role")
+        role = role if isinstance(role, str) else "unknown"
+        calls = m.get("tool_calls")
         ids = [
             str(c.get("id"))
-            for c in m.get("tool_calls") or []
+            for c in (calls if isinstance(calls, list) else [])
             if isinstance(c, dict) and c.get("id")
         ]
         out.append(
@@ -79,7 +83,7 @@ def _invalid(body: dict[str, Any]) -> str | None:
         if not isinstance(m, dict):
             return f"{where} must be an object"
         role = m.get("role")
-        if role not in _ROLES:
+        if not isinstance(role, str) or role not in _ROLES:
             return f"{where}.role must be one of {sorted(_ROLES)}, got {role!r}"
         content = m.get("content")
         calls = m.get("tool_calls")
@@ -122,8 +126,10 @@ def _invalid(body: dict[str, Any]) -> str | None:
 
 
 def _tool_names(raw: Any) -> list[str]:
-    names = []
-    for t in raw or []:
+    names: list[str] = []
+    if not isinstance(raw, list):
+        return names
+    for t in raw:
         if isinstance(t, dict) and isinstance(t.get("function"), dict):
             name = t["function"].get("name")
             if isinstance(name, str):
@@ -215,12 +221,16 @@ class ScriptedServer:
 def _handler_for(script: ScriptedModel) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        #: Socket timeout (seconds): a client that stops sending mid-request is
+        #: recorded as unsupported instead of holding the handler forever.
+        timeout = _SOCKET_TIMEOUT
 
         def log_message(self, format: str, *args: Any) -> None:  # silence stderr
             pass
 
         def _send(self, status: int, body: dict[str, Any]) -> None:
             data = json.dumps(body).encode()
+            self._responded = True
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -257,19 +267,46 @@ def _handler_for(script: ScriptedModel) -> type[BaseHTTPRequestHandler]:
             )
 
         def _read_json(self) -> tuple[Any, str | None]:
-            length = int(self.headers.get("Content-Length") or 0)
+            header = self.headers.get("Content-Length") or "0"
+            if not header.strip().isdigit():
+                self.close_connection = True  # the body's extent is unknown
+                return None, f"invalid Content-Length header {header!r}"
+            length = int(header)
+            if length > _MAX_BODY:
+                self.close_connection = True
+                return None, f"request body too large ({length} bytes; limit {_MAX_BODY})"
             raw = self.rfile.read(length) if length > 0 else b""
+            if len(raw) < length:
+                self.close_connection = True
+                return None, f"request body ended after {len(raw)} of {length} bytes"
             try:
                 return json.loads(raw or b"null"), None
             except ValueError:
                 return None, "the request body is not valid JSON"
 
         def _unsupported(self, detail: str, body: Any = None) -> None:
-            msgs = _normalize(body.get("messages")) if isinstance(body, dict) else []
-            tools = _tool_names(body.get("tools")) if isinstance(body, dict) else []
-            self._reject(script._reject_unsupported(msgs, tools, "server", detail))
+            # Recording must succeed whatever the payload looks like.
+            try:
+                msgs = _normalize(body.get("messages")) if isinstance(body, dict) else []
+                tools = _tool_names(body.get("tools")) if isinstance(body, dict) else []
+            except Exception:  # noqa: BLE001
+                msgs, tools = [], []
+            exc = script._reject_unsupported(msgs, tools, "server", detail)  # recorded first
+            self._reject(exc)
 
         def do_POST(self) -> None:
+            self._responded = False
+            try:
+                self._post()
+            except Exception as exc:  # noqa: BLE001 - never let a request go unrecorded
+                if self._responded:
+                    raise  # a response (and its record) already went out
+                self.close_connection = True
+                self._unsupported(
+                    f"the request could not be processed ({type(exc).__name__}: {exc})"
+                )
+
+        def _post(self) -> None:
             body, error = self._read_json()
             path = self.path.split("?", 1)[0].rstrip("/")
             if path != _PATH:

@@ -763,3 +763,124 @@ class TestEvidenceCannotBeRewritten:
             r = p.run(lambda q: "x", "q")
         r.calls[0].args[0]["k"].append("rewritten")
         assert p.calls[0].args == [{"k": [1]}]
+
+
+class TestMalformedRequestsAreAlwaysRecorded:
+    """Review of efa7765: these requests crashed the handler before anything was
+    recorded, so a following valid request consumed the script and the gate passed.
+    Each test sends the malformed request, then a valid one, and checks the gate
+    still fails."""
+
+    @staticmethod
+    def _raw(s: Any, data: bytes) -> bytes:
+        with socket.create_connection((s.host, s.port), timeout=5) as sock:
+            sock.sendall(data)
+            try:
+                return sock.recv(200).split(b"\r\n")[0]
+            except OSError:
+                return b""
+
+    @staticmethod
+    def _post_bytes(body: bytes, length: str | None = None) -> bytes:
+        size = str(len(body)) if length is None else length
+        return (
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Type: application/json\r\nConnection: close\r\n"
+            + b"Content-Length: "
+            + size.encode()
+            + b"\r\n\r\n"
+            + body
+        )
+
+    def _check(self, request: bytes, match: str) -> None:
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                first = self._raw(s, request)
+                status, _ = post(s.base_url, USER)  # the script is then used normally
+        assert first.startswith(b"HTTP/1.1 400"), first
+        assert status == 200
+        assert [c.outcome for c in m.calls] == ["unsupported", "served"]
+        failures = gate_failures(p)
+        assert not p.gate().passed
+        assert any(match in f for f in failures), failures
+
+    @pytest.mark.parametrize(
+        "body, match",
+        [
+            ({"model": "m", "messages": [{"role": [], "content": "x"}]}, "role must be"),
+            ({"model": "m", "messages": [{"role": {"a": 1}, "content": "x"}]}, "role must be"),
+            ({**USER, "tools": 1}, "'tools' must be a list"),
+            ({**USER, "tools": "lookup"}, "'tools' must be a list"),
+            ({**USER, "tools": [1]}, "must be a function tool"),
+            ({"model": "m", "messages": [1]}, "must be an object"),
+            (
+                {
+                    "model": "m",
+                    "messages": [{"role": "assistant", "content": None, "tool_calls": 1}],
+                },
+                "tool_calls must be a non-empty list",
+            ),
+            ({"model": "m", "messages": [{"role": "user", "content": 5}]}, "content must be"),
+            ({"model": ["m"], "messages": [{"role": "user", "content": "x"}]}, "'model'"),
+            ([1, 2], "must be a JSON object"),
+        ],
+    )
+    def test_wrongly_typed_json(self, body, match):
+        self._check(self._post_bytes(json.dumps(body).encode()), match)
+
+    @pytest.mark.parametrize(
+        "length, match",
+        [("oops", "invalid Content-Length"), ("-5", "invalid Content-Length"), ("1e3", "invalid")],
+    )
+    def test_bad_content_length(self, length, match):
+        self._check(self._post_bytes(b"{}", length=length), match)
+
+    def test_body_too_large(self, monkeypatch):
+        from agentprobe import _scripted_server
+
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                monkeypatch.setattr(_scripted_server, "_MAX_BODY", 10)
+                first = self._raw(s, self._post_bytes(json.dumps(USER).encode()))
+                monkeypatch.undo()
+                status, _ = post(s.base_url, USER)
+        assert first.startswith(b"HTTP/1.1 400") and status == 200
+        assert [c.outcome for c in m.calls] == ["unsupported", "served"]
+        assert any("too large" in f for f in gate_failures(p))
+
+    def test_client_stalls_mid_body(self, monkeypatch):
+        from agentprobe import _scripted_server
+
+        monkeypatch.setattr(_scripted_server, "_SOCKET_TIMEOUT", 0.3)
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                with socket.create_connection((s.host, s.port), timeout=5) as sock:
+                    sock.sendall(self._post_bytes(b'{"model"', length="500"))
+                    sock.recv(200)  # the server gives up after the socket timeout
+                status, _ = post(s.base_url, USER)
+        assert status == 200
+        assert [c.outcome for c in m.calls] == ["unsupported", "served"]
+        assert not p.gate().passed
+
+    def test_any_unexpected_error_is_recorded(self, monkeypatch):
+        """The catch-all: a bug in request handling becomes a recorded rejection,
+        never a lost request."""
+        from agentprobe import _scripted_server
+
+        def broken(body: Any) -> str | None:
+            raise KeyError("simulated handler bug")
+
+        monkeypatch.setattr(_scripted_server, "_invalid", broken)
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                status, resp = post(s.base_url, USER)
+                monkeypatch.undo()
+                ok, _ = post(s.base_url, USER)
+        assert status == 400 and "could not be processed (KeyError" in resp["error"]["message"]
+        assert ok == 200
+        assert [c.outcome for c in m.calls] == ["unsupported", "served"]
+        assert not p.gate().passed
