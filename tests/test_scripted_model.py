@@ -886,6 +886,36 @@ class TestMalformedRequestsAreAlwaysRecorded:
         assert [c.outcome for c in m.calls] == ["unsupported", "served"]
         assert any(f"{method} /v1/chat/completions is not supported" in f for f in gate_failures(p))
 
+    def test_request_that_stalls_in_its_headers(self, monkeypatch):
+        """Python's HTTP server handles this timeout itself, before any handler
+        method runs; it must still be recorded."""
+        from agentprobe import _scripted_server
+
+        monkeypatch.setattr(_scripted_server, "_SOCKET_TIMEOUT", 0.3)
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                self._raw(s, b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Le")
+                status, _ = post(s.base_url, USER)
+        assert status == 200
+        assert [c.outcome for c in m.calls] == ["unsupported", "served"]
+        assert any("stalled before its headers were complete" in f for f in gate_failures(p))
+
+    def test_idle_connection_is_not_a_request(self, monkeypatch):
+        """Clients keep idle connections open; one that times out having sent
+        nothing must not fail the test."""
+        from agentprobe import _scripted_server
+
+        monkeypatch.setattr(_scripted_server, "_SOCKET_TIMEOUT", 0.3)
+        with probe() as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                with socket.create_connection((s.host, s.port), timeout=5) as sock:
+                    sock.recv(10)  # returns b"" when the server closes the idle socket
+                status, _ = post(s.base_url, USER)
+        assert status == 200
+        assert [c.outcome for c in m.calls] == ["served"]
+
     def test_any_unexpected_error_is_recorded(self, monkeypatch):
         """The catch-all: a bug in request handling becomes a recorded rejection,
         never a lost request."""
