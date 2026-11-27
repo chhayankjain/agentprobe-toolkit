@@ -865,6 +865,27 @@ class TestMalformedRequestsAreAlwaysRecorded:
         assert [c.outcome for c in m.calls] == ["unsupported", "served"]
         assert not p.gate().passed
 
+    @pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE", "GET"])
+    def test_unsupported_method_with_stalled_body(self, monkeypatch, method):
+        """Review of 13e1a52: PUT/PATCH bodies were read before the rejection was
+        recorded, so a stalled body left no record and the gate passed."""
+        from agentprobe import _scripted_server
+
+        monkeypatch.setattr(_scripted_server, "_SOCKET_TIMEOUT", 0.3)
+        with probe(enforce=False) as p:
+            m = p.model(script.reply("hi"))
+            with m.serve() as s:
+                first = self._raw(
+                    s,
+                    f"{method} /v1/chat/completions HTTP/1.1\r\nHost: x\r\n"
+                    "Content-Length: 500\r\n\r\n{".encode(),
+                )
+                status, _ = post(s.base_url, USER)
+        assert first.startswith(b"HTTP/1.1 400"), first  # answered at once, body unread
+        assert status == 200
+        assert [c.outcome for c in m.calls] == ["unsupported", "served"]
+        assert any(f"{method} /v1/chat/completions is not supported" in f for f in gate_failures(p))
+
     def test_any_unexpected_error_is_recorded(self, monkeypatch):
         """The catch-all: a bug in request handling becomes a recorded rejection,
         never a lost request."""
