@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-Fixes for ways a fault test could pass, or inject the wrong fault, without saying so, and scripted models for testing what an agent does with the model's responses.
+## [1.6.0] - 2026-11-27
+
+Scripted models, for testing what your agent does with the model's responses (bad or malformed tool arguments, unknown tools, loops, empty replies), and fixes for ways a fault test could pass, or inject the wrong fault, without saying so.
+
+> **Upgrading from 1.5:** two fixes can turn a test that passed by accident into a failing one. `p.run()` / `p.arun()` now raise `ProbeError` on a probe that was never entered (use `with probe() as p:`), and a blank answer (`""` or whitespace) now fails answer assertions like `None`. Reports from `result.to_dict()` are schema 1.3: `observed` gains `model_calls` and `model_problems`; existing fields are unchanged.
 
 ### Added
 - Scripted models (#131): `p.model(script.tool_call(...), script.reply(...), max_calls=...)` serves fixed model responses in order, to test what your agent does when the model sends bad or malformed tool arguments, calls an unknown tool, loops, or replies with nothing. Steps: `script.tool_call` (with `raw_args` for malformed JSON, delivered unchanged), `script.tool_calls`, `script.reply` and `script.repeat`. Two front ends: `model.langchain()`, a LangChain chat model (`[langchain]` extra), and `model.serve()`, a local OpenAI Chat Completions endpoint on 127.0.0.1 (standard library, non-streaming, one documented surface). The gate fails on an unused step, a request after the script ran out (`ScriptExhausted`), a request over `max_calls` (`ModelBudgetExceeded`), an overlapping request (`ScriptOverlap`) or an unsupported request (streaming, an invalid request body, another endpoint or HTTP method; rejected before a step is used), even when the agent catches the exception. Tool-call IDs are unique within a script, so one call's result can't pass for another's. New assertions: `assert_model_calls_at_most`, `assert_model_received` and `assert_every_tool_call_answered`, which are unassessed, never passed, when the run ended before the evidence could exist. `result.model_calls` records every request; the JSON report's schema version is now 1.3. A script tests the agent's control flow, not model intelligence

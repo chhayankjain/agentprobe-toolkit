@@ -30,7 +30,7 @@ For recovery behaviour, the tool-call assertions below are sturdier still: they 
 
 ## Scripted-model assertions
 
-For a probe with a scripted model (`p.model(...)`). See [Script the model](../guides/scripted-model.md). *Unreleased.*
+For a probe with a scripted model (`p.model(...)`). See [Script the model](../guides/scripted-model.md). *Since 1.6.*
 
 | Assertion | Passes when |
 |---|---|

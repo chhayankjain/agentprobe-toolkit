@@ -31,12 +31,13 @@ Tools fail in production: they time out, hit rate limits and return bad data. Ag
 - **Deterministic scenarios.** Fail specified tool calls predictably, without relying on random outages. Live-model responses and external tools can still vary.
 - **Evidence-based.** A test fails unless every fault you declared actually fired. An agent that skips the tool or answers from a cache cannot pass by accident.
 - **Non-invasive.** Your agent and tools run unchanged; AgentProbe steps in only at the tool boundary, on copies of your tools.
+- **Model-side failures too.** Script the model's responses (bad tool arguments, unknown tools, endless tool calls, empty replies) to test what your agent does with them, with a cap on model calls. *Since 1.6.*
 - **Just pytest.** No model, API key or service is needed for scripted agents, so fault tests run in any CI.
 
 ## Installation
 
 ```bash
-pip install "agentprobe-toolkit>=1.5" pytest
+pip install "agentprobe-toolkit>=1.6" pytest
 ```
 
 The package installs as `agentprobe-toolkit` and imports as `agentprobe`. Requires Python 3.11+.
@@ -131,7 +132,7 @@ How wrapping, concurrency, deadlines and cleanup work is documented in [How prob
 
 ## Learn more
 
-- [**Guides**](https://agentprobe-toolkit.pages.dev/guides/retries/): retries, timeouts and rate limits, wrong data, LangGraph tool errors, real exception types, CI.
+- [**Guides**](https://agentprobe-toolkit.pages.dev/guides/retries/): retries, timeouts and rate limits, wrong data, LangGraph tool errors, real exception types, scripting the model, CI.
 - [**Tutorial**](https://github.com/chhayankjain/agentprobe-toolkit/blob/main/examples/your_agent/README.md): add a fault test to an existing agent and run it in CI, in ten minutes.
 - [**Real-model example**](https://github.com/chhayankjain/agentprobe-toolkit/blob/main/examples/real_model_agent/README.md): the same tests on a LangChain agent with a local Ollama model.
 - [**Case study**](https://agentprobe-toolkit.pages.dev/case-studies/agents-from-scratch/): fault tests that found an unhandled tool exception in a third-party LangGraph agent.
