@@ -336,11 +336,13 @@ def _handler_for(script: ScriptedModel) -> type[BaseHTTPRequestHandler]:
                 script._end()
 
         def _other(self) -> None:
-            body, _ = self._read_json() if self.command in ("PUT", "PATCH") else (None, None)
+            # Record the rejection first and never read the body: an unsupported
+            # method needs no payload, and reading one could stall or fail before
+            # anything was recorded. The unread body leaves the connection unusable.
+            self.close_connection = True
             self._unsupported(
                 f"{self.command} {self.path} is not supported; the scripted server "
-                f"implements only POST {_PATH} (OpenAI Chat Completions)",
-                body,
+                f"implements only POST {_PATH} (OpenAI Chat Completions)"
             )
 
         def do_GET(self) -> None:
