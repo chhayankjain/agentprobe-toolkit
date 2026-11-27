@@ -228,6 +228,25 @@ def _handler_for(script: ScriptedModel) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: Any) -> None:  # silence stderr
             pass
 
+        def handle_one_request(self) -> None:
+            # Mark "nothing received yet": an idle keep-alive connection that times
+            # out is not a request, but one that stalls part-way through is.
+            self.raw_requestline = b""
+            super().handle_one_request()
+
+        def log_error(self, format: str, *args: Any) -> None:
+            # The standard library handles a timeout while reading the request line
+            # or headers itself, before any do_* method runs. Record it if part of
+            # a request had arrived, so a stalled request can't vanish.
+            if format.startswith("Request timed out") and self.raw_requestline:
+                line = self.raw_requestline.decode("latin-1", "replace").strip()
+                script._reject_unsupported(
+                    [],
+                    [],
+                    "server",
+                    f"the request {line[:80]!r} stalled before its headers were complete",
+                )
+
         def _send(self, status: int, body: dict[str, Any]) -> None:
             data = json.dumps(body).encode()
             self._responded = True
