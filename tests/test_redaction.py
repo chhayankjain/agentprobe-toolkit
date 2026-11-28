@@ -573,3 +573,67 @@ def test_additional_key_names_do_not_match_unrelated_fields():
         "public_key": "public-value",
     }
     assert Redactor().value(payload) == payload
+
+
+PROVIDER_CREDENTIALS = [
+    prefix + "A1b2C3d4" * 4
+    for prefix in (
+        "sk_live_",
+        "sk_test_",
+        "rk_live_",
+        "rk_test_",
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+        "xoxr-",
+        "xoxs-",
+        "hf_",
+        "tvly-",
+    )
+] + ["AIza" + "A" * 35]
+
+
+@pytest.mark.parametrize("credential", PROVIDER_CREDENTIALS)
+@pytest.mark.parametrize("redact", [True, False])
+def test_provider_credentials_in_reports(credential, redact):
+    text = f"Credential ({credential}), request failed"
+    with probe(enforce=False, redact=redact) as p:
+
+        def tool(data):
+            assert data == {"nested": [text]}
+            raise ValueError(text)
+
+        result = p.run(lambda _: p.wrap(tool)({"nested": [text]}), text)
+        with pytest.raises(AssertionError) as error:
+            result.assert_no_crash()
+    for report in [
+        result.summary(),
+        json.dumps(result.to_dict()),
+        json.dumps(result.calls[0].to_dict()),
+        str(error.value),
+    ]:
+        assert (credential in report) is (not redact)
+    assert str(result.exception) == text
+    redactor = Redactor(redact)
+    filtered = redactor.text(text)
+    assert redactor.text(filtered) == filtered
+    assert filtered.startswith("Credential (") and filtered.endswith("), request failed")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "sk_live_",
+        "sk_test_example",
+        "rk_live_short",
+        "AIzaExample",
+        "xoxb-short",
+        "hf_example",
+        "tvly-demo",
+        "pk_live_" + "A" * 32,
+        "not_hf_" + "A" * 32,
+        "xoxo-" + "A" * 32,
+    ],
+)
+def test_provider_patterns_leave_non_credentials_unchanged(text):
+    assert Redactor().text(text) == text

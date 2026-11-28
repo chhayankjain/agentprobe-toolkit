@@ -28,7 +28,13 @@ _PATTERNS = (
     (
         "api_key",
         re.compile(
-            r"\b(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b"
+            r"\b(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}"
+            r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+            r"|AKIA[A-Z0-9]{16}"
+            r"|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"
+            r"|AIza[A-Za-z0-9_-]{35}"
+            r"|xox[baprs]-[A-Za-z0-9-]{16,}"
+            r"|hf_[A-Za-z0-9]{20,}|tvly-[A-Za-z0-9_-]{20,})\b"
         ),
     ),
     (
