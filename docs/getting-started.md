@@ -94,7 +94,7 @@ AgentProbe gate FAILED: scenarios 0/1 required exercised, assertions 0/0 require
 ## Before you wire in real tools
 
 - **Real tools really run.** Exception and substituted-return faults (`fail_*`, `always_fail`, `returns`) bypass your tool. Every other call runs it, including calls delayed by `slow()`. If a tool sends email, charges a card or writes to a database, point it at a sandbox or a test double.
-- **Reports are not redacted yet.** Summaries and `to_dict()` include tool arguments and answers verbatim. Keep secrets out of fault-test inputs ([#102](https://github.com/chhayankjain/agentprobe-toolkit/issues/102)).
+- **Report redaction (Unreleased).** The upcoming version filters recognized secrets and personal data by default, with custom rules and a `redact=False` opt-out. Published version **1.6.0 does not redact reports**; keep secrets out of its test inputs and shared artifacts. See [Reports](instrumentation.md#reports) for the upcoming behavior and its limits.
 
 ## Try the demo
 
