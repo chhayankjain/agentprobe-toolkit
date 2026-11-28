@@ -791,6 +791,11 @@ class ProbeResult:
     model_problems: list[str] = field(default_factory=list)
     scripted_models: int = 0
     _redactor: Redactor = field(default_factory=Redactor, repr=False, compare=False)
+    # Report-only registration metadata, including tools that were never called.
+    # Exact assertion comparisons continue to use each call's own signature.
+    _signatures: dict[str, inspect.Signature | None] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     # ---- inferred (heuristics) ------------------------------------------------
 
@@ -1083,11 +1088,12 @@ class ProbeResult:
                 )
         calls = self._calls_to(tool)
         shown_args = _jsonable(list(args), redactor=self._redactor)
-        for call in calls:
-            if call.signature is not None:
+        signatures = [self._signatures.get(tool), *(call.signature for call in calls)]
+        for signature in signatures:
+            if signature is not None:
                 names = [
                     p.name
-                    for p in call.signature.parameters.values()
+                    for p in signature.parameters.values()
                     if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
                 ]
                 for i, key in enumerate(names[: len(shown_args)]):
@@ -2112,6 +2118,8 @@ class Probe:
         elapsed_ms = (time.perf_counter() - start) * 1000
         finished = not (still_running or cancelled)
         answer = _answer_text(output) if (finished and error is None) else None
+        with self._lock:
+            signatures = dict(self._signatures)
         result = ProbeResult(
             input=input,
             answer=answer,
@@ -2130,6 +2138,7 @@ class Probe:
             model_problems=self._model_problems(),
             scripted_models=len(self._models),
             _redactor=self._redactor,
+            _signatures=signatures,
         )
         with self._lock:
             self._results.append(result)

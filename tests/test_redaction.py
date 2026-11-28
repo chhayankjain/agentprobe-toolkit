@@ -230,3 +230,62 @@ def test_prefixed_sensitive_key_keeps_its_name(key):
     redactor = Redactor()
     text = f'{key}="opaque-value"; safe=ok'
     assert redactor.text(text) == f"{key}=[REDACTED:secret]; safe=ok"
+
+
+@pytest.mark.parametrize("redact", [True, False])
+@pytest.mark.parametrize("key", ["password", "pin"])
+def test_uncalled_tool_positional_secret(redact, key):
+    def login(password, /):
+        return "ok"
+
+    def unlock(pin, /):
+        return "ok"
+
+    with probe(enforce=False, redact=redact, redact_keys=["pin"]) as p:
+        p.wrap({"authenticate": login if key == "password" else unlock})
+        result = p.run(lambda _: "skipped", "")
+        with pytest.raises(AssertionError) as error:
+            result.assert_called_with("authenticate", "opaque-demo-credential")
+        assert result.calls == []
+        assert result.assertions[-1].status == "fail"
+        assert not result.gate().passed
+        surfaces = [
+            str(error.value),
+            result.summary(),
+            json.dumps(result.to_dict()),
+            str(result.gate()),
+            str(p.gate()),
+        ]
+        for surface in surfaces:
+            assert ("opaque-demo-credential" in surface) is (not redact)
+        assert "no matching invocation" in str(error.value)
+
+
+def test_uncalled_tool_signature_is_frozen_in_result():
+    def login(password):
+        return "ok"
+
+    def other(value):
+        return value
+
+    with probe(enforce=False) as p:
+        p.wrap({"login": login})
+        result = p.run(lambda _: "skipped", "")
+        # Later registration must not rewrite an earlier result's report metadata.
+        p.wrap({"login": other})
+        with pytest.raises(AssertionError) as error:
+            result.assert_called_with("login", "opaque-demo-credential")
+        assert "opaque-demo-credential" not in str(error.value)
+        assert "_signatures" not in result.to_dict()
+
+
+async def test_uncalled_async_tool_positional_secret():
+    async def login(password):
+        return "ok"
+
+    async with probe(enforce=False) as p:
+        p.wrap(login)
+        result = await p.arun(lambda _: "skipped", "")
+        with pytest.raises(AssertionError) as error:
+            result.assert_called_with("login", "opaque-demo-credential")
+        assert "opaque-demo-credential" not in str(error.value)
