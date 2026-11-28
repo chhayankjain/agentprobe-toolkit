@@ -118,7 +118,25 @@ If the code awaiting `arun()` is itself cancelled (for example, a test timeout),
 
 ## Reports
 
-**Real tools run, and reports are not redacted (1.4).** A call that receives a fault (`raise` or `returns`) never reaches the wrapped tool; every other call does, including calls delayed by `slow()`, so side effects happen as usual. Use sandboxed or test-double tools where side effects matter. Recorded arguments, return values, answers and assertion messages are kept verbatim in `summary()`, assertion errors and `to_dict()`; keep secrets and personal data out of fault-test inputs, or keep the JSON out of shared CI artifacts. Automatic redaction is tracked in #102.
+**Real tools run.** A call that receives a fault (`raise` or `returns`) never reaches the wrapped tool; every other call does, including calls delayed by `slow()`, so side effects happen as usual. Use sandboxed or test-double tools where side effects matter.
+
+**Reports redact sensitive data by default.** Summaries, assertion messages, gate failures, `to_dict()`, and tool-call snapshots filter common OpenAI/Anthropic, GitHub and AWS API key shapes, bearer tokens, JWTs and email addresses. Nested dictionary values with names ending in `api_key`, `token`, `password`, `secret` or `authorization` are replaced entirely; matching ignores case, underscores and hyphens (for example, `access_token` and `clientSecret`). Key/value pairs in text are filtered too. Known positional tool parameters with sensitive names are hidden in call snapshots. Markers such as `[REDACTED:email]` and `[REDACTED:secret]` identify removed content. Filtering happens before tool-result and exception previews are shortened.
+
+Add application-specific regular expressions and key names:
+
+```python
+from agentprobe.testing import probe
+
+with probe(redact=[r"customer-\d+"], redact_keys=["pin", "account_id"]) as p:
+    result = p.run(lambda _: "customer-123", "example")
+    assert "customer-123" not in result.summary()
+```
+
+`redact` accepts a sequence of regex strings or compiled patterns, in addition to the built-ins. `redact_keys` adds sensitive names. Use `probe(redact=False)` to explicitly disable all filtering for local debugging; its reports may contain secrets.
+
+Redaction only affects presentation and tool-call report snapshots. Tools and agents receive their original values. Answer and tool-call assertions still compare the original evidence, including when the expected value is a secret. `result.answer`, `input`, `raw_output`, `exception`, call `raw_args`/`raw_kwargs` and `exact_args`/`exact_kwargs` remain unredacted for programmatic use; do not publish these directly. Scripted-model evidence also remains unchanged for assertions, and is filtered when included in the result's reports. External tracing exporters and logs emitted by your own code are outside this report filter.
+
+Pattern matching is not a guarantee that arbitrary sensitive data is detected: opaque customer identifiers, encoded data (including byte previews), unfamiliar credential formats and unlabeled passwords need application-specific patterns or sensitive key names. Review reports before sharing them.
 
 **Arguments are frozen when the call starts.** `CallRecord.args` and `kwargs` hold a JSON-safe snapshot taken at the call boundary, so changing your objects later can't alter recorded evidence. The live objects are kept separately in `raw_args` and `raw_kwargs` for debugging; they are never serialized and may change. Nothing is deep-copied, so locks, clients and callbacks are safe to pass.
 

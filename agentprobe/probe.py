@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agentprobe._otel import get_tracer
+from agentprobe._redaction import Redact, Redactor
 from agentprobe._text import message_text
 from agentprobe._threads import start_daemon
 from agentprobe.errors import ProbeError
@@ -523,11 +524,13 @@ def _compile(pattern: str | re.Pattern[str], flags: int) -> re.Pattern[str]:
         raise ProbeError(f"invalid regular expression {pattern!r}: {exc}") from None
 
 
-def _short(value: Any, limit: int = 200) -> str:
+def _short(value: Any, limit: int = 200, redactor: Redactor | None = None) -> str:
     try:
         text = repr(value)
     except Exception as exc:  # noqa: BLE001 - repr of arbitrary user objects
         text = f"<unrepresentable {type(value).__name__}: {type(exc).__name__}>"
+    if redactor is not None:
+        text = redactor.text(text)
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
@@ -709,7 +712,7 @@ def _match_call(call: CallRecord, args: tuple[Any, ...], kwargs: dict[str, Any])
     return None if undecided else True
 
 
-def _jsonable(value: Any, _depth: int = 0) -> Any:
+def _jsonable(value: Any, _depth: int = 0, redactor: Redactor | None = None) -> Any:
     """Convert to JSON-safe data without touching the caller's objects.
 
     JSON-native values pass through. Datetimes, dates, times, decimals, UUIDs,
@@ -717,25 +720,35 @@ def _jsonable(value: Any, _depth: int = 0) -> Any:
     "preview"}``. Anything else becomes ``{"type": <qualified name>, "repr": ...}``.
     """
     if value is None or isinstance(value, (bool, int, str)):
-        return value
+        return redactor.value(value) if redactor else value
     if isinstance(value, float):
         return value if math.isfinite(value) else repr(value)
     if _depth > 20:
-        return {"type": type(value).__name__, "repr": _short(value)}
+        return {"type": type(value).__name__, "repr": _short(value, redactor=redactor)}
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v, _depth + 1) for v in value]
+        return [_jsonable(v, _depth + 1, redactor) for v in value]
     if isinstance(value, dict):
-        return {str(k): _jsonable(v, _depth + 1) for k, v in value.items()}
+        return {
+            (redactor.text(str(k)) if redactor else str(k)): (
+                "[REDACTED:secret]"
+                if redactor and redactor.sensitive(str(k))
+                else _jsonable(v, _depth + 1, redactor)
+            )
+            for k, v in value.items()
+        }
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
         return value.isoformat()
     if isinstance(value, enum.Enum):
-        return _jsonable(value.value, _depth + 1)
+        return _jsonable(value.value, _depth + 1, redactor)
     if isinstance(value, (decimal.Decimal, uuid.UUID, pathlib.PurePath)):
         return str(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         raw = bytes(value)
         return {"type": "bytes", "length": len(raw), "preview": raw[:32].hex()}
-    return {"type": f"{type(value).__module__}.{type(value).__qualname__}", "repr": _short(value)}
+    return {
+        "type": f"{type(value).__module__}.{type(value).__qualname__}",
+        "repr": _short(value, redactor=redactor),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -777,6 +790,7 @@ class ProbeResult:
     #: Gate failures from scripted models: rejected requests and unused steps.
     model_problems: list[str] = field(default_factory=list)
     scripted_models: int = 0
+    _redactor: Redactor = field(default_factory=Redactor, repr=False, compare=False)
 
     # ---- inferred (heuristics) ------------------------------------------------
 
@@ -810,6 +824,7 @@ class ProbeResult:
     # ---- assertions -------------------------------------------------------------
 
     def _record(self, name: str, status: str, message: str, required: bool) -> None:
+        name, message = self._redactor.text(name), self._redactor.text(message)
         self.assertions.append(AssertionRecord(name, status, message, required))
         if status != "pass" and required:
             raise AssertionError(f"{name}: {message}\n\n{self.summary()}")
@@ -1067,9 +1082,20 @@ class ProbeResult:
                     "these. Check other objects on result.calls[i].raw_args yourself"
                 )
         calls = self._calls_to(tool)
+        shown_args = _jsonable(list(args), redactor=self._redactor)
+        for call in calls:
+            if call.signature is not None:
+                names = [
+                    p.name
+                    for p in call.signature.parameters.values()
+                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+                ]
+                for i, key in enumerate(names[: len(shown_args)]):
+                    if self._redactor.sensitive(key):
+                        shown_args[i] = "[REDACTED:secret]"
         name = (
-            f"tool {tool!r} called with args={_short(_jsonable(list(args)))}, "
-            f"kwargs={_short(_jsonable(kwargs))}"
+            f"tool {tool!r} called with args={_short(shown_args)}, "
+            f"kwargs={_short(_jsonable(kwargs, redactor=self._redactor))}"
         )
         undecided: list[CallRecord] = []
         for call in calls:
@@ -1271,9 +1297,12 @@ class ProbeResult:
     def gate(self) -> GateReport:
         """Pass only if every required scenario was exercised and every required
         assertion passed. Unassessed, error and missing evidence never pass."""
-        return _gate(
+        report = _gate(
             self.scenarios, self.assertions, self.known_tools, self.calls, self.model_problems
         )
+
+        report.failures = [self._redactor.text(f) for f in report.failures]
+        return report
 
     # ---- presentation ----------------------------------------------------------
 
@@ -1330,7 +1359,7 @@ class ProbeResult:
         lines.append("Inferred (heuristics over the call log)")
         lines.append(f"  retries: {self.retries or 'none'}")
         lines.append(f"  fallbacks: {self.fallbacks or 'none'}")
-        return "\n".join(lines)
+        return self._redactor.text("\n".join(lines))
 
     def __str__(self) -> str:
         return self.summary()
@@ -1339,35 +1368,40 @@ class ProbeResult:
         """JSON-safe representation (``json.dumps`` always works). Non-JSON values
         are converted as described in :func:`_jsonable`; caller objects are not
         modified."""
-        return {
-            "schema_version": SCHEMA_VERSION,
-            "input": _jsonable(self.input),
-            "observed": {
-                "answer": self.answer,
-                "exception": None
-                if self.exception is None
-                else {"type": type(self.exception).__name__, "message": str(self.exception)},
-                "elapsed_ms": round(self.elapsed_ms, 2),
-                "deadline_seconds": self.deadline_seconds,
-                "deadline_exceeded": self.deadline_exceeded,
-                "still_running": self.still_running,
-                "cancel_requested": self.cancel_requested,
-                "cancelled": self.cancelled,
-                "calls": [c.to_dict() for c in sorted(self.calls, key=lambda c: c.index)],
-                "scenarios": [dataclasses.asdict(s) for s in self.scenarios],
-                "model_calls": [r.to_dict() for r in self.model_calls],
-                "model_problems": list(self.model_problems),
-            },
-            "asserted": [dataclasses.asdict(a) for a in self.assertions],
-            "inferred": {
-                "rule": "retry = same tool called next after it had raised; "
-                "fallback = different tool called next after a tool had raised; "
-                "calls that overlapped in time are never paired",
-                "retries": self.retries,
-                "fallbacks": [list(f) for f in self.fallbacks],
-            },
-            "gate": dataclasses.asdict(self.gate()),
-        }
+        data = self._redactor.value(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "input": _jsonable(self.input, redactor=self._redactor),
+                "observed": {
+                    "answer": self.answer,
+                    "exception": None
+                    if self.exception is None
+                    else {"type": type(self.exception).__name__, "message": str(self.exception)},
+                    "elapsed_ms": round(self.elapsed_ms, 2),
+                    "deadline_seconds": self.deadline_seconds,
+                    "deadline_exceeded": self.deadline_exceeded,
+                    "still_running": self.still_running,
+                    "cancel_requested": self.cancel_requested,
+                    "cancelled": self.cancelled,
+                    "calls": [c.to_dict() for c in sorted(self.calls, key=lambda c: c.index)],
+                    "scenarios": [dataclasses.asdict(s) for s in self.scenarios],
+                    "model_calls": [r.to_dict() for r in self.model_calls],
+                    "model_problems": list(self.model_problems),
+                },
+                "asserted": [dataclasses.asdict(a) for a in self.assertions],
+                "inferred": {
+                    "rule": "retry = same tool called next after it had raised; "
+                    "fallback = different tool called next after a tool had raised; "
+                    "calls that overlapped in time are never paired",
+                    "retries": self.retries,
+                    "fallbacks": [list(f) for f in self.fallbacks],
+                },
+                "gate": dataclasses.asdict(self.gate()),
+            }
+        )
+
+        assert isinstance(data, dict)
+        return data
 
 
 def _gate(
@@ -1439,7 +1473,10 @@ class Probe:
     Use :func:`agentprobe.testing.probe` (or ``Probe()``) as a context manager.
     """
 
-    def __init__(self, *, enforce: bool = True) -> None:
+    def __init__(
+        self, *, enforce: bool = True, redact: Redact = True, redact_keys: Sequence[str] = ()
+    ) -> None:
+        self._redactor = Redactor(redact, redact_keys)
         self._lock = threading.RLock()
         self._rules: list[_Rule] = []
         self._calls: list[CallRecord] = []
@@ -1676,6 +1713,23 @@ class Probe:
 
     # ---- the call path -------------------------------------------------------------
 
+    def _report_args(self, args: tuple[Any, ...], sig: inspect.Signature | None) -> list[Any]:
+        names = (
+            []
+            if sig is None
+            else [
+                p.name
+                for p in sig.parameters.values()
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+        )
+        return [
+            "[REDACTED:secret]"
+            if i < len(names) and self._redactor.sensitive(names[i])
+            else _jsonable(v, redactor=self._redactor)
+            for i, v in enumerate(args)
+        ]
+
     def _begin(
         self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> tuple[CallRecord, _Action | None]:
@@ -1691,8 +1745,8 @@ class Probe:
                     index=len(self._late_calls) + 1,
                     tool=name,
                     tool_call_index=0,
-                    args=_jsonable(list(args)),
-                    kwargs=_jsonable(_public_kwargs(kwargs)),
+                    args=self._report_args(args, sig),
+                    kwargs=_jsonable(public_kwargs, redactor=self._redactor),
                     raw_args=tuple(args),
                     raw_kwargs=_public_kwargs(kwargs),
                     exact_args=exact_args,
@@ -1720,15 +1774,15 @@ class Probe:
                 index=self._next_index,
                 tool=name,
                 tool_call_index=n,
-                args=_jsonable(list(args)),
-                kwargs=_jsonable(_public_kwargs(kwargs)),
+                args=self._report_args(args, sig),
+                kwargs=_jsonable(public_kwargs, redactor=self._redactor),
                 raw_args=tuple(args),
                 raw_kwargs=_public_kwargs(kwargs),
                 exact_args=exact_args,
                 exact_kwargs=exact_kwargs,
                 signature=sig,
                 injected=action is not None,
-                fault=rule_hit.description if rule_hit else None,
+                fault=self._redactor.text(rule_hit.description) if rule_hit else None,
                 rule_id=rule_hit.rule_id if rule_hit else None,
                 started_seq=self._seq,
             )
@@ -1750,11 +1804,14 @@ class Probe:
             rec.duration_ms = (time.perf_counter() - started) * 1000
             if exc is None:
                 rec.outcome = "returned"
-                rec.value = _short(value)
+                report_value = value
+                if self._redactor.enabled and isinstance(value, (dict, list, tuple)):
+                    report_value = _jsonable(value, redactor=self._redactor)
+                rec.value = _short(report_value, redactor=self._redactor)
             else:
                 rec.outcome = "raised"
                 rec.exception_type = type(exc).__name__
-                rec.exception_message = str(exc)[:300]
+                rec.exception_message = self._redactor.text(str(exc))[:300]
             if not rec.after_probe_end and not self._active:
                 rec.completed_after_close = True
 
@@ -2072,6 +2129,7 @@ class Probe:
             model_calls=self._model_calls(),
             model_problems=self._model_problems(),
             scripted_models=len(self._models),
+            _redactor=self._redactor,
         )
         with self._lock:
             self._results.append(result)
@@ -2085,13 +2143,16 @@ class Probe:
         assertion passed in every result."""
         with self._lock:
             assertions = [a for r in self._results for a in r.assertions]
-        return _gate(
+        report = _gate(
             self.scenarios(),
             assertions,
             list(self._known_tools),
             self.calls,
             self._model_problems(),
         )
+
+        report.failures = [self._redactor.text(f) for f in report.failures]
+        return report
 
 
 def _snapshot(c: CallRecord) -> CallRecord:
