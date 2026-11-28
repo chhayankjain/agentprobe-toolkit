@@ -32,7 +32,10 @@ plugin with markers and reports is planned for v1.5.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from agentprobe import script
+from agentprobe._redaction import RedactionPattern
 from agentprobe.faults import (
     ToolCallAPIError,
     ToolCallError,
@@ -64,10 +67,20 @@ from agentprobe.scripted_model import (
 )
 
 
-def probe(*, enforce: bool = True) -> Probe:
+def probe(
+    *,
+    enforce: bool = True,
+    redact: bool = True,
+    redact_keys: Sequence[str] = (),
+    redact_patterns: Sequence[RedactionPattern] = (),
+) -> Probe:
     """Create a probe. ``enforce=False`` skips the gate on exit (for exploration);
-    you can still call ``result.gate()`` yourself."""
-    return Probe(enforce=enforce)
+    you can still call ``result.gate()`` yourself. Reports redact by default;
+    ``redact=False`` opts out, ``redact_patterns`` adds regex patterns, and ``redact_keys``
+    adds sensitive field names. Execution and comparison evidence are unchanged."""
+    return Probe(
+        enforce=enforce, redact=redact, redact_keys=redact_keys, redact_patterns=redact_patterns
+    )
 
 
 __all__ = [

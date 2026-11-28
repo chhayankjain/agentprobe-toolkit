@@ -23,6 +23,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from agentprobe._redaction import Redactor
 from agentprobe.errors import ProbeError
 
 __all__ = ["Step", "ToolCall", "tool_call", "tool_calls", "reply", "repeat"]
@@ -37,8 +38,10 @@ class ToolCall:
     raw_args: str | None
     id: str | None
 
-    def describe(self) -> str:
+    def describe(self, *, redactor: Redactor | None = None) -> str:
         shown = self.raw_args if self.raw_args is not None else json.dumps(self.args, default=str)
+        if redactor is not None:
+            shown = redactor.text(shown)
         if len(shown) > 60:
             shown = shown[:57] + "..."
         return f"{self.name}({shown})"
@@ -58,12 +61,13 @@ class Step:
     times: int | None = 1
     _validated: bool = field(default=False, repr=False, compare=False)
 
-    def describe(self) -> str:
+    def describe(self, *, redactor: Redactor | None = None) -> str:
         if self.kind == "reply":
-            text = self.text if len(self.text) <= 40 else self.text[:37] + "..."
+            text = redactor.text(self.text) if redactor is not None else self.text
+            text = text if len(text) <= 40 else text[:37] + "..."
             what = f"reply {text!r}"
         else:
-            what = "tool call " + ", ".join(c.describe() for c in self.calls)
+            what = "tool call " + ", ".join(c.describe(redactor=redactor) for c in self.calls)
         if self.times is None:
             return f"repeat {what} on every call"
         if self.times != 1:

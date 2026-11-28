@@ -118,11 +118,32 @@ If the code awaiting `arun()` is itself cancelled (for example, a test timeout),
 
 ## Reports
 
-**Real tools run, and reports are not redacted (1.4).** A call that receives a fault (`raise` or `returns`) never reaches the wrapped tool; every other call does, including calls delayed by `slow()`, so side effects happen as usual. Use sandboxed or test-double tools where side effects matter. Recorded arguments, return values, answers and assertion messages are kept verbatim in `summary()`, assertion errors and `to_dict()`; keep secrets and personal data out of fault-test inputs, or keep the JSON out of shared CI artifacts. Automatic redaction is tracked in #102.
+**Real tools run.** A call that receives a fault (`raise` or `returns`) never reaches the wrapped tool; every other call does, including calls delayed by `slow()`, so side effects happen as usual. Use sandboxed or test-double tools where side effects matter.
+
+!!! warning "Default redaction and its options are Unreleased"
+    The redaction behavior and `redact` / `redact_patterns` / `redact_keys` options below are not available in published version **1.6.0**. That release records report values verbatim: keep secrets out of test inputs and shared CI artifacts. This documentation follows the development branch and may describe features before they ship.
+
+**Unreleased: reports redact sensitive data by default.** Summaries, assertion messages, gate failures, `to_dict()`, and tool-call snapshots filter common OpenAI/Anthropic, GitHub, AWS, Stripe (`sk_live_`, `sk_test_`, `rk_live_`, `rk_test_`), Google (`AIza`), Slack (`xoxb-`, `xoxp-`, `xoxa-`, `xoxr-`, `xoxs-`), Hugging Face (`hf_`) and Tavily (`tvly-`) API key shapes, bearer tokens, JWTs and email addresses. Nested dictionary values with names ending in `api_key`, `token`, `password`, `secret`, `authorization`, `aws_secret_access_key`, `cookie` or `private_key` are replaced entirely; matching ignores case, underscores and hyphens (for example, `access_token` and `clientSecret`). Typed metadata is preserved for boolean flags whose names start with `is` or `has` (for example, `is_secret=False`) and numeric counts whose names start with `num`, `count` or `total` (for example, `num_input_token=5`). Explicit `redact_keys` overrides these exceptions, and numeric passwords/tokens remain sensitive. The same rules apply to key/value pairs in text; ambiguous prose such as `secret: 42` or `password: reset link sent` remains conservatively redacted. Email matching requires an alphabetic final domain label, so package versions such as `langchain@1.4.9` stay visible. Known positional tool parameters with sensitive names are hidden in call snapshots. Markers such as `[REDACTED:email#...]` and `[REDACTED:secret#...]` identify removed content. Their IDs use a randomly keyed hash per probe: equal values within the same category keep the same marker, while different values remain distinguishable. IDs change between probes; the key is not exported. Hash-prefix collisions are disambiguated, and redacting dictionary keys preserves all entries, including when an input key already resembles a marker. Filtering happens before tool-result and exception previews are shortened.
+
+Add application-specific regular expressions and key names:
+
+```python
+from agentprobe.testing import probe
+
+with probe(redact_patterns=[r"customer-\d+"], redact_keys=["pin", "account_id"]) as p:
+    result = p.run(lambda _: "customer-123", "example")
+    assert "customer-123" not in result.summary()
+```
+
+`redact` is a boolean switch (enabled by default). `redact_patterns` accepts a sequence of regex strings or compiled patterns, in addition to the built-ins. `redact_keys` adds sensitive names. Use `probe(redact=False)` to explicitly disable all filtering for local debugging; its reports may contain secrets. Pattern syntax is validated even when redaction is disabled; invalid regex syntax raises `ProbeError`. If you used an earlier development snapshot, replace `redact=[...]` with `redact_patterns=[...]`.
+
+Redaction only affects presentation and tool-call report snapshots. Tools and agents receive their original values. Answer and tool-call assertions still compare the original evidence, including when the expected value is a secret. `result.answer`, `input`, `raw_output`, `exception`, call `raw_args`/`raw_kwargs` and `exact_args`/`exact_kwargs` remain unredacted for programmatic use; do not publish these directly. Scripted-model evidence also remains unchanged for assertions, and is filtered when included in the result's reports. External tracing exporters and logs emitted by your own code are outside this report filter.
+
+Pattern matching is not a guarantee that arbitrary sensitive data is detected: opaque customer identifiers, encoded data (including byte previews), unfamiliar credential formats and unlabeled passwords need application-specific patterns or sensitive key names. Review reports before sharing them.
 
 **Arguments are frozen when the call starts.** `CallRecord.args` and `kwargs` hold a JSON-safe snapshot taken at the call boundary, so changing your objects later can't alter recorded evidence. The live objects are kept separately in `raw_args` and `raw_kwargs` for debugging; they are never serialized and may change. Nothing is deep-copied, so locks, clients and callbacks are safe to pass.
 
-`result.summary()` prints what was observed, asserted and inferred. `result.to_dict()` is always JSON-safe (schema version `1.2`): JSON values pass through; datetimes, decimals, UUIDs, paths and enums become strings; bytes become `{"type": "bytes", "length", "preview"}`; anything else becomes `{"type", "repr"}`. Your objects are never modified.
+`result.summary()` prints what was observed, asserted and inferred. `result.to_dict()` is always JSON-safe (schema version `1.3`): JSON values pass through; datetimes, decimals, UUIDs, paths and enums become strings; bytes become `{"type": "bytes", "length", "preview"}`; anything else becomes `{"type", "repr"}`. Your objects are never modified.
 
 ## Evidence
 

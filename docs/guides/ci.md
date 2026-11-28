@@ -84,5 +84,7 @@ The [real-model example](https://github.com/chhayankjain/agentprobe-toolkit/blob
 
 `result.to_dict()` returns versioned, JSON-safe output: the call log, scenario evidence, assertion results and the gate verdict. Write it to a file and upload it as an artifact to keep evidence of what each test exercised.
 
-!!! warning
-    Reports are not redacted yet: tool arguments, return values and answers appear verbatim. Keep secrets and customer data out of fault-test inputs, or don't upload the JSON ([#102](https://github.com/chhayankjain/agentprobe-toolkit/issues/102)).
+!!! warning "Report redaction is Unreleased"
+    Published version **1.6.0 does not redact reports**: tool arguments, return values and answers appear verbatim. Keep secrets and customer data out of its fault-test inputs, or do not upload the JSON.
+
+    The upcoming version redacts recognized sensitive data by default. Custom rules and `redact=False` are also Unreleased. Filtering is pattern-based, so review artifacts before sharing them; raw evidence and external logs remain unredacted. See [Reports](../instrumentation.md#reports) for coverage and limitations.

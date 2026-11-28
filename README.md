@@ -141,7 +141,7 @@ How wrapping, concurrency, deadlines and cleanup work is documented in [How prob
 ## Before you test real tools
 
 - **Real tools run.** Exception and substituted-return faults bypass the original tool. Other calls, including calls delayed by `slow()`, execute it. Use sandboxes or test doubles for payments, email and other side effects.
-- **Reports are not redacted yet.** Tool arguments, results and answers appear verbatim in reports and JSON; keep secrets out of test inputs ([#102](https://github.com/chhayankjain/agentprobe-toolkit/issues/102)).
+- **Report redaction (Unreleased).** The upcoming version filters recognized secrets and personal data by default, with custom rules and a `redact=False` opt-out. Published version **1.6.0 does not redact reports**; keep secrets out of its test inputs and shared artifacts. See [Reports](https://agentprobe-toolkit.pages.dev/instrumentation/#reports) for the upcoming behavior and its limits.
 
 ## Contributing
 
