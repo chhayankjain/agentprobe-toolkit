@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- Probe reports redact recognized secrets and personal data by default (#102, #134), with additional regex patterns through `redact=[...]`, sensitive names through `redact_keys=[...]`, and an explicit `redact=False` opt-out. Redacted values have distinguishable per-probe IDs; redacting dictionary keys preserves entries.
+- Probe reports redact recognized secrets and personal data by default (#102, #134), with additional regex patterns through `redact_patterns=[...]`, sensitive names through `redact_keys=[...]`, and an explicit `redact=False` opt-out. Redacted values have distinguishable per-probe IDs; redacting dictionary keys preserves entries.
 
 > **Upgrading from 1.6.0 (Unreleased):** redaction changes public report snapshots as well as displayed summaries. `CallRecord.args`, `kwargs`, `value`, `exception_message`, and standalone `CallRecord.to_dict()` exports now filter recognized sensitive values. `ProbeResult.summary()`, `to_dict()`, assertion messages and gate failures are filtered too. For example, a positional email in `call.args` becomes a `[REDACTED:email#...]` marker, while `call.raw_args` retains the original email. Tests or consumers that compare report strings must account for these markers; their IDs vary between probes. Use `probe(redact=False)` to restore unredacted reports for local debugging, keeping those reports out of shared logs and artifacts. Tools, agents and assertion comparisons still use original values; raw and exact argument evidence remains unredacted. These options and defaults are **not available in the published 1.6.0 release**, whose reports are unredacted.
 

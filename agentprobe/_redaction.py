@@ -13,7 +13,7 @@ from typing import Any
 
 from agentprobe.errors import ProbeError
 
-Redact = bool | Sequence[str | re.Pattern[str]]
+RedactionPattern = str | re.Pattern[str]
 _DEFAULT_KEYS = (
     "api_key",
     "token",
@@ -53,9 +53,22 @@ def _normalize(key: str) -> str:
 
 
 class Redactor:
-    def __init__(self, redact: Redact = True, keys: Sequence[str] = ()) -> None:
-        if isinstance(redact, (str, bytes)) or not isinstance(redact, (bool, Sequence)):
-            raise TypeError("redact must be a bool or a sequence of regex patterns")
+    def __init__(
+        self,
+        redact: bool = True,
+        keys: Sequence[str] = (),
+        *,
+        patterns: Sequence[RedactionPattern] = (),
+    ) -> None:
+        if not isinstance(redact, bool):
+            raise TypeError("redact must be a bool; pass custom patterns with redact_patterns")
+        if isinstance(patterns, (str, bytes)) or not isinstance(patterns, Sequence):
+            raise TypeError("redact_patterns must be a sequence of string regex patterns")
+        for pattern in patterns:
+            if not isinstance(pattern, (str, re.Pattern)) or (
+                isinstance(pattern, re.Pattern) and not isinstance(pattern.pattern, str)
+            ):
+                raise TypeError("redact_patterns must contain strings or compiled string patterns")
         if isinstance(keys, (str, bytes)) or any(
             not isinstance(k, str) or not _normalize(k) for k in keys
         ):
@@ -68,13 +81,12 @@ class Redactor:
         self.custom_keys = {_normalize(k) for k in keys}
         self.keys = {_normalize(k) for k in _DEFAULT_KEYS} | self.custom_keys
         self.patterns = list(_PATTERNS)
-        if not isinstance(redact, bool):
-            for pattern in redact:
-                try:
-                    compiled = re.compile(pattern)
-                except re.error as exc:
-                    raise ProbeError(f"invalid redaction pattern {pattern!r}: {exc}") from None
-                self.patterns.append(("custom", compiled))
+        for pattern in patterns:
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                raise ProbeError(f"invalid redaction pattern {pattern!r}: {exc}") from None
+            self.patterns.append(("custom", compiled))
         # Match key/value pairs in prose, JSON, and Python reprs, including quoted
         # values containing spaces. Keep the key visible to explain the removal.
         key_pattern = "|".join("[_-]*".join(map(re.escape, k)) for k in sorted(self.keys))

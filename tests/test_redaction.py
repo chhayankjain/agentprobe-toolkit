@@ -89,7 +89,9 @@ def test_sensitive_keys_in_text_and_idempotence(text):
 
 
 def test_custom_rules_and_isolation():
-    with probe(enforce=False, redact=[re.compile(r"customer-\d+")], redact_keys=["pin"]) as p:
+    with probe(
+        enforce=False, redact_patterns=[re.compile(r"customer-\d+")], redact_keys=["pin"]
+    ) as p:
         tool = p.wrap(lambda data: data)
         result = p.run(lambda _: tool({"pin": 12345, "text": "customer-123 alice@example.com"}), "")
         encoded = json.dumps(result.to_dict())
@@ -161,7 +163,9 @@ def test_non_sensitive_data_unchanged():
     assert redactor.value(value) == value
 
 
-@pytest.mark.parametrize("kwargs", [{"redact": "abc"}, {"redact_keys": "pin"}, {"redact": ["["]}])
+@pytest.mark.parametrize(
+    "kwargs", [{"redact": "abc"}, {"redact_keys": "pin"}, {"redact_patterns": ["["]}]
+)
 def test_invalid_configuration(kwargs):
     with pytest.raises((TypeError, ProbeError)):
         probe(**kwargs)
@@ -374,7 +378,7 @@ def test_literal_marker_key_cannot_overwrite_redacted_key():
 
 
 def test_custom_patterns_do_not_rewrite_generated_markers():
-    redactor = Redactor([r"\d+", r"REDACTED"])
+    redactor = Redactor(patterns=[r"\d+", r"REDACTED"])
     output = redactor.value({"token": "123", "text": "123 alice@example.com"})
     assert redactor.value(output) == output
 
@@ -462,7 +466,7 @@ def test_unused_descriptions_use_probe_custom_patterns_without_mutating_script()
 
     value = "x" * 26 + " customer-12345678901234567890"
     step = script.reply(value)
-    with probe(enforce=False, redact=[r"customer-\d+"]) as p:
+    with probe(enforce=False, redact_patterns=[r"customer-\d+"]) as p:
         p.model(step)
         p.on("lookup").returns(value)
         result = p.run(lambda _: "done", "")
@@ -489,9 +493,9 @@ def test_unused_descriptions_use_probe_custom_patterns_without_mutating_script()
 )
 def test_converted_values_redacted_in_standalone_call_exports(value, redact):
     text = value.isoformat() if isinstance(value, (datetime.date, datetime.time)) else str(value)
-    rules = [re.escape(text)] if redact else False
+    rules = [re.escape(text)]
     payload = {"nested": [value]}
-    with probe(redact=rules) as p:
+    with probe(redact=redact, redact_patterns=rules) as p:
 
         def tool(arg, *, data):
             assert arg is value
@@ -701,7 +705,7 @@ def test_positional_metadata_and_custom_override():
 @pytest.mark.parametrize("factory", [probe, Probe])
 def test_invalid_redaction_pattern_raises_probe_error(factory):
     with pytest.raises(ProbeError, match="invalid redaction pattern"):
-        factory(redact=["["])
+        factory(redact_patterns=["["])
 
 
 @pytest.mark.parametrize("value", [(1, {2: "two"}), {1: ("two", 3)}, [b"abc", {4: 5}]])
@@ -722,3 +726,36 @@ def test_return_repr_redacts_nested_values_without_converting_types():
     assert "alice@example.com" not in shown
     assert "opaque-secret" not in shown
     assert result.raw_output is value
+
+
+@pytest.mark.parametrize("factory", [probe, Probe])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_separate_redaction_flag_and_patterns(factory, enabled):
+    text = "CUSTOM-42 alice@example.com"
+    with factory(redact=enabled, redact_patterns=[re.compile(r"custom-\d+", re.I)]) as p:
+        result = p.run(lambda _: text, "")
+    report = result.summary()
+    assert ("CUSTOM-42" in report) is (not enabled)
+    assert ("alice@example.com" in report) is (not enabled)
+    assert result.answer == text
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"redact": [r"customer-\d+"]},
+        {"redact": 1},
+        {"redact_patterns": "secret"},
+        {"redact_patterns": b"secret"},
+        {"redact_patterns": [123]},
+        {"redact_patterns": [re.compile(b"secret")]},
+    ],
+)
+def test_invalid_separate_redaction_options(kwargs):
+    with pytest.raises(TypeError, match="redact"):
+        probe(**kwargs)
+
+
+def test_disabled_redaction_still_validates_pattern_configuration():
+    with pytest.raises(ProbeError, match="invalid redaction pattern"):
+        probe(redact=False, redact_patterns=["["])

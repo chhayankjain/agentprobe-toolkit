@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from agentprobe import script
-from agentprobe._redaction import Redact
+from agentprobe._redaction import RedactionPattern
 from agentprobe.faults import (
     ToolCallAPIError,
     ToolCallError,
@@ -67,12 +67,20 @@ from agentprobe.scripted_model import (
 )
 
 
-def probe(*, enforce: bool = True, redact: Redact = True, redact_keys: Sequence[str] = ()) -> Probe:
+def probe(
+    *,
+    enforce: bool = True,
+    redact: bool = True,
+    redact_keys: Sequence[str] = (),
+    redact_patterns: Sequence[RedactionPattern] = (),
+) -> Probe:
     """Create a probe. ``enforce=False`` skips the gate on exit (for exploration);
     you can still call ``result.gate()`` yourself. Reports redact by default;
-    ``redact`` adds regex patterns (or ``False`` opts out), and ``redact_keys``
+    ``redact=False`` opts out, ``redact_patterns`` adds regex patterns, and ``redact_keys``
     adds sensitive field names. Execution and comparison evidence are unchanged."""
-    return Probe(enforce=enforce, redact=redact, redact_keys=redact_keys)
+    return Probe(
+        enforce=enforce, redact=redact, redact_keys=redact_keys, redact_patterns=redact_patterns
+    )
 
 
 __all__ = [

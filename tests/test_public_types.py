@@ -83,3 +83,19 @@ def test_sync_wrappers_keep_the_return_type() -> None:
     latency_result = _no_latency().wrap(sync_tool)()
     assert_type(latency_result, int)
     assert latency_result == 42
+
+
+def test_redaction_configuration_types() -> None:
+    import re
+
+    from agentprobe.testing import Probe, probe
+
+    with probe(
+        redact=True,
+        redact_patterns=[r"customer-\d+", re.compile("internal", re.I)],
+        redact_keys=["pin"],
+    ) as p:
+        assert_type(p, Probe)
+        p.run(lambda _: "ok", "").assert_answer_contains("ok")
+    with Probe(redact=False, redact_patterns=[r"customer-\d+"]) as direct:
+        assert_type(direct, Probe)

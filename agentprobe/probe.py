@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agentprobe._otel import get_tracer
-from agentprobe._redaction import Redact, Redactor
+from agentprobe._redaction import RedactionPattern, Redactor
 from agentprobe._text import message_text
 from agentprobe._threads import start_daemon
 from agentprobe.errors import ProbeError
@@ -1485,9 +1485,14 @@ class Probe:
     """
 
     def __init__(
-        self, *, enforce: bool = True, redact: Redact = True, redact_keys: Sequence[str] = ()
+        self,
+        *,
+        enforce: bool = True,
+        redact: bool = True,
+        redact_keys: Sequence[str] = (),
+        redact_patterns: Sequence[RedactionPattern] = (),
     ) -> None:
-        self._redactor = Redactor(redact, redact_keys)
+        self._redactor = Redactor(redact, redact_keys, patterns=redact_patterns)
         self._lock = threading.RLock()
         self._rules: list[_Rule] = []
         self._calls: list[CallRecord] = []
