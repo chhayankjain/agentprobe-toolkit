@@ -2,6 +2,8 @@
 
 import json
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -186,3 +188,45 @@ def test_nested_key_in_free_text():
     assert "hidden-one" not in cleaned
     assert "hidden-two" not in cleaned
     assert '"safe": 42' in cleaned
+
+
+def test_redacting_megabyte_word_is_fast():
+    # A subprocess bounds the test even if quadratic scanning is reintroduced.
+    # Time only filtering; interpreter startup is outside the one-second budget.
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+from time import perf_counter
+from agentprobe._redaction import Redactor
+redactor = Redactor()
+text = "A" * 1_000_000
+start = perf_counter()
+assert redactor.text(text) == text
+elapsed = perf_counter() - start
+assert elapsed < 1.0, f"Redacting a 1 MB word took {elapsed:.3f}s"
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("text", ["ACGT" * 2500, "Ab09_-" * 1667])
+def test_large_tool_result_does_not_fail_timing_assertion(text):
+    with probe() as p:
+        tool = p.wrap(lambda: text)
+        result = p.run(lambda _: tool(), "")
+        result.assert_within(1.0)
+    assert result.answer == text
+
+
+@pytest.mark.parametrize("key", ["access_token", "clientSecret", "service-api-key"])
+def test_prefixed_sensitive_key_keeps_its_name(key):
+    redactor = Redactor()
+    text = f'{key}="opaque-value"; safe=ok'
+    assert redactor.text(text) == f"{key}=[REDACTED:secret]; safe=ok"

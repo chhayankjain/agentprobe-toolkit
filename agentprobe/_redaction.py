@@ -44,7 +44,9 @@ class Redactor:
         # Match key/value pairs in prose, JSON, and Python reprs, including quoted
         # values containing spaces. Keep the key visible to explain the removal.
         key_pattern = "|".join("[_-]*".join(map(re.escape, k)) for k in sorted(self.keys))
-        self.pairs = re.compile(rf"""["']?[\w-]*(?:{key_pattern})["']?\s*[:=]\s*""", re.I)
+        # Search for the suffix directly: a greedy word prefix retries from
+        # every character of long nonmatching words (quadratic time).
+        self.pairs = re.compile(rf"""(?:{key_pattern})["']?\s*[:=]\s*""", re.I)
 
     def sensitive(self, key: str) -> bool:
         normalized = _normalize(key)
