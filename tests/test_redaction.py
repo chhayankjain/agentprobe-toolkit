@@ -530,3 +530,46 @@ def test_non_sensitive_converted_values_keep_their_representation():
         datetime.date(2026, 11, 28),
     ]
     assert _jsonable(values, redactor=Redactor()) == _jsonable(values)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "aws_secret_access_key",
+        "AWS-SECRET-ACCESS-KEY",
+        "Cookie",
+        "cookie",
+        "private_key",
+        "privateKey",
+    ],
+)
+def test_additional_sensitive_field_names(key):
+    secret = "opaque-credential-value"
+    payload = {"nested": [{key: secret}]}
+    with probe(enforce=False) as p:
+        tool = p.wrap(lambda data: data)
+        result = p.run(lambda _: tool(payload), "")
+        result.assert_called_with("<lambda>", payload)
+        with pytest.raises(AssertionError) as error:
+            result.assert_answer_contains("missing")
+    for report in [
+        json.dumps(result.calls[0].to_dict()),
+        result.summary(),
+        json.dumps(result.to_dict()),
+        str(error.value),
+        Redactor().text(f'{key}="{secret}"'),
+    ]:
+        assert secret not in report
+    assert result.raw_output is payload
+    assert result.calls[0].raw_args[0] is payload
+    assert Redactor(False).value(payload) == payload
+
+
+def test_additional_key_names_do_not_match_unrelated_fields():
+    payload = {
+        "cookie_count": 2,
+        "private_key_format": "PEM",
+        "aws_secret_access_key_length": 40,
+        "public_key": "public-value",
+    }
+    assert Redactor().value(payload) == payload

@@ -12,7 +12,16 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 Redact = bool | Sequence[str | re.Pattern[str]]
-_DEFAULT_KEYS = ("api_key", "token", "password", "secret", "authorization")
+_DEFAULT_KEYS = (
+    "api_key",
+    "token",
+    "password",
+    "secret",
+    "authorization",
+    "aws_secret_access_key",
+    "cookie",
+    "private_key",
+)
 _PATTERNS = (
     ("bearer", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.I)),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")),
