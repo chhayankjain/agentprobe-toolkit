@@ -702,3 +702,23 @@ def test_positional_metadata_and_custom_override():
 def test_invalid_redaction_pattern_raises_probe_error(factory):
     with pytest.raises(ProbeError, match="invalid redaction pattern"):
         factory(redact=["["])
+
+
+@pytest.mark.parametrize("value", [(1, {2: "two"}), {1: ("two", 3)}, [b"abc", {4: 5}]])
+@pytest.mark.parametrize("redact", [True, False])
+def test_return_call_log_preserves_original_repr(value, redact):
+    with probe(redact=redact) as p:
+        result = p.run(lambda _: p.wrap(lambda: value)(), "")
+    assert result.calls[0].value == repr(value)
+    assert result.raw_output is value
+
+
+def test_return_repr_redacts_nested_values_without_converting_types():
+    value = (1, {2: "alice@example.com", "password": ["opaque-secret"]})
+    with probe() as p:
+        result = p.run(lambda _: p.wrap(lambda: value)(), "")
+    shown = result.calls[0].value
+    assert shown.startswith("(1, {2: ")
+    assert "alice@example.com" not in shown
+    assert "opaque-secret" not in shown
+    assert result.raw_output is value

@@ -1816,10 +1816,7 @@ class Probe:
             rec.duration_ms = (time.perf_counter() - started) * 1000
             if exc is None:
                 rec.outcome = "returned"
-                report_value = value
-                if self._redactor.enabled and isinstance(value, (dict, list, tuple)):
-                    report_value = _jsonable(value, redactor=self._redactor)
-                rec.value = _short(report_value, redactor=self._redactor)
+                rec.value = _short(value, redactor=self._redactor)
             else:
                 rec.outcome = "raised"
                 rec.exception_type = type(exc).__name__
