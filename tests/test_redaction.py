@@ -146,8 +146,8 @@ async def test_async_and_late_calls():
         wrapped = p.wrap(tool)
         result = await p.arun(lambda _: wrapped({"token": "hidden"}), "")
     await wrapped({"token": "late-hidden"})
-    assert result.calls[0].args == [{"token": "[REDACTED:secret]"}]
-    assert p.late_calls[0].args == [{"token": "[REDACTED:secret]"}]
+    assert result.calls[0].args == [{"token": p._redactor.marker("hidden")}]
+    assert p.late_calls[0].args == [{"token": p._redactor.marker("late-hidden")}]
     assert p.late_calls[0].raw_args == ({"token": "late-hidden"},)
 
 
@@ -229,7 +229,7 @@ def test_large_tool_result_does_not_fail_timing_assertion(text):
 def test_prefixed_sensitive_key_keeps_its_name(key):
     redactor = Redactor()
     text = f'{key}="opaque-value"; safe=ok'
-    assert redactor.text(text) == f"{key}=[REDACTED:secret]; safe=ok"
+    assert redactor.text(text) == f"{key}={redactor.marker('opaque-value')}; safe=ok"
 
 
 @pytest.mark.parametrize("redact", [True, False])
@@ -289,3 +289,121 @@ async def test_uncalled_async_tool_positional_secret():
         with pytest.raises(AssertionError) as error:
             result.assert_called_with("login", "opaque-demo-credential")
         assert "opaque-demo-credential" not in str(error.value)
+
+
+def test_redacted_values_have_per_probe_identity():
+    first, second = Redactor(), Redactor()
+    alice = first.text("alice@example.com")
+    bob = first.text("bob@example.com")
+    assert alice != bob
+    assert first.text("alice@example.com") == alice
+    assert second.text("alice@example.com") != alice
+    assert first.text(alice) == alice
+    assert first.marker("one") != first.marker("two")
+    assert first.marker("one") == first.marker("one")
+
+
+def test_failure_message_distinguishes_expected_and_actual_email():
+    with probe(enforce=False) as p:
+        result = p.run(lambda _: "Contact bob@example.com", "")
+        with pytest.raises(AssertionError) as error:
+            result.assert_answer_contains("alice@example.com")
+        expected = p._redactor.text("alice@example.com")
+        actual = p._redactor.text("bob@example.com")
+        assert expected != actual
+        assert expected in str(error.value)
+        assert actual in str(error.value)
+        assert "alice@example.com" not in str(error.value)
+        assert "bob@example.com" not in str(error.value)
+        assert result.to_dict() == result.to_dict()
+
+
+@pytest.mark.parametrize("redact", [True, False])
+def test_redacted_dictionary_keys_preserve_entries_on_every_surface(redact):
+    value = {"alice@example.com": 1, "bob@example.com": 2}
+    with probe(redact=redact) as p:
+        tool = p.wrap(lambda data: data)
+        result = p.run(lambda _: tool(value), value)
+    snapshots = [
+        result.calls[0].args[0],
+        p.calls[0].args[0],
+        result.to_dict()["input"],
+        result.to_dict()["observed"]["calls"][0]["args"][0],
+    ]
+    for snapshot in snapshots:
+        assert len(snapshot) == 2
+        assert sorted(snapshot.values()) == [1, 2]
+        assert p._redactor.value(snapshot) == snapshot
+        if redact:
+            assert "alice@example.com" not in json.dumps(snapshot)
+        else:
+            assert snapshot == value
+    assert value == {"alice@example.com": 1, "bob@example.com": 2}
+
+
+def test_short_digest_collisions_do_not_overwrite_entries(monkeypatch):
+    redactor = Redactor()
+    monkeypatch.setattr(
+        redactor,
+        "_digest",
+        lambda value: "a" * 16 + ("b" * 48 if value.startswith("alice") else "c" * 48),
+    )
+    output = redactor.value({"alice@example.com": 1, "bob@example.com": 2})
+    assert len(output) == 2
+    assert sorted(output.values()) == [1, 2]
+    assert redactor.value(output) == output
+    assert redactor.text("alice@example.com") in output
+    assert redactor.text("bob@example.com") in output
+
+
+def test_literal_marker_key_cannot_overwrite_redacted_key():
+    from agentprobe.probe import _jsonable
+
+    redactor = Redactor()
+    marker = redactor.text("alice@example.com")
+    original = {"alice@example.com": 1, marker: 2, marker + "~2": 3}
+    for output in [redactor.value(original), _jsonable(original, redactor=redactor)]:
+        assert len(output) == 3
+        assert sorted(output.values()) == [1, 2, 3]
+        assert redactor.value(output) == output
+        assert "alice@example.com" not in output
+
+
+def test_custom_patterns_do_not_rewrite_generated_markers():
+    redactor = Redactor([r"\d+", r"REDACTED"])
+    output = redactor.value({"token": "123", "text": "123 alice@example.com"})
+    assert redactor.value(output) == output
+
+
+def test_identity_is_shared_across_concurrent_calls():
+    from concurrent.futures import ThreadPoolExecutor
+
+    redactor = Redactor()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        values = list(executor.map(redactor.text, ["alice@example.com"] * 40))
+    assert len(set(values)) == 1
+
+
+def test_sensitive_opaque_value_with_broken_repr_still_reaches_tool():
+    class Opaque:
+        def __repr__(self):
+            raise ValueError("cannot render")
+
+    secret = Opaque()
+    with probe() as p:
+
+        def login(password):
+            assert password is secret
+            return "ok"
+
+        result = p.run(lambda _: p.wrap(login)(secret), "")
+        result.assert_no_crash()
+    assert result.calls[0].raw_args[0] is secret
+    assert result.calls[0].args[0].startswith("[REDACTED:secret#")
+
+
+def test_secret_identity_matches_structured_and_text_fields():
+    redactor = Redactor()
+    marker = redactor.value({"password": "opaque-value"})["password"]
+    assert redactor.text('password="opaque-value"') == "password=" + marker
+    assert redactor.text("password=" + marker) == "password=" + marker

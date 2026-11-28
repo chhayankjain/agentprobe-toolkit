@@ -728,14 +728,16 @@ def _jsonable(value: Any, _depth: int = 0, redactor: Redactor | None = None) -> 
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(v, _depth + 1, redactor) for v in value]
     if isinstance(value, dict):
-        return {
-            (redactor.text(str(k)) if redactor else str(k)): (
-                "[REDACTED:secret]"
+        items = [
+            (
+                str(k),
+                redactor.marker(v)
                 if redactor and redactor.sensitive(str(k))
-                else _jsonable(v, _depth + 1, redactor)
+                else _jsonable(v, _depth + 1, redactor),
             )
             for k, v in value.items()
-        }
+        ]
+        return redactor.mapping(items) if redactor else dict(items)
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
         return value.isoformat()
     if isinstance(value, enum.Enum):
@@ -1098,7 +1100,7 @@ class ProbeResult:
                 ]
                 for i, key in enumerate(names[: len(shown_args)]):
                     if self._redactor.sensitive(key):
-                        shown_args[i] = "[REDACTED:secret]"
+                        shown_args[i] = self._redactor.marker(args[i])
         name = (
             f"tool {tool!r} called with args={_short(shown_args)}, "
             f"kwargs={_short(_jsonable(kwargs, redactor=self._redactor))}"
@@ -1730,7 +1732,7 @@ class Probe:
             ]
         )
         return [
-            "[REDACTED:secret]"
+            self._redactor.marker(v)
             if i < len(names) and self._redactor.sensitive(names[i])
             else _jsonable(v, redactor=self._redactor)
             for i, v in enumerate(args)
