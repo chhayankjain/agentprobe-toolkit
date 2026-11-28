@@ -637,3 +637,15 @@ def test_provider_credentials_in_reports(credential, redact):
 )
 def test_provider_patterns_leave_non_credentials_unchanged(text):
     assert Redactor().text(text) == text
+
+
+@pytest.mark.parametrize("text", ["langchain@1.4.9", "@scope/package@2.0.1", "tool@10.20.30"])
+def test_package_versions_are_not_emails(text):
+    assert Redactor().text(text) == text
+
+
+@pytest.mark.parametrize(
+    "text", ["alice@example.com", "alice@sub.example.co.uk", "alice@example.technology"]
+)
+def test_alphabetic_email_domains_remain_redacted(text):
+    assert text not in Redactor().text(text)
