@@ -63,7 +63,8 @@ class Redactor:
         self._markers: dict[tuple[str, str], str] = {}
         self._issued: set[str] = set()
         self.enabled = redact is not False
-        self.keys = {_normalize(k) for k in (*_DEFAULT_KEYS, *keys)}
+        self.custom_keys = {_normalize(k) for k in keys}
+        self.keys = {_normalize(k) for k in _DEFAULT_KEYS} | self.custom_keys
         self.patterns = list(_PATTERNS)
         if not isinstance(redact, bool):
             self.patterns.extend(("custom", re.compile(p)) for p in redact)
@@ -74,9 +75,21 @@ class Redactor:
         # every character of long nonmatching words (quadratic time).
         self.pairs = re.compile(rf"""(?:{key_pattern})["']?\s*[:=]\s*""", re.I)
 
-    def sensitive(self, key: str) -> bool:
+    def sensitive(self, key: str, value: Any = None) -> bool:
         normalized = _normalize(key)
-        return self.enabled and any(normalized.endswith(k) for k in self.keys)
+        if not self.enabled:
+            return False
+        if any(normalized.endswith(k) for k in self.custom_keys):
+            return True
+        if not any(normalized.endswith(k) for k in self.keys):
+            return False
+        # Only exempt typed metadata with an explicit flag/count prefix. Numeric
+        # passwords, tokens and custom sensitive fields remain protected.
+        if type(value) is bool and normalized.startswith(("is", "has")):
+            return False
+        if type(value) in (int, float) and normalized.startswith(("num", "count", "total")):
+            return False
+        return True
 
     def _digest(self, value: Any) -> str:
         try:
@@ -125,12 +138,22 @@ class Redactor:
                     continue
                 parts.append(text[end : match.end()])
                 end = _value_end(text, match.end())
-                value = text[match.end() : end]
-                if value.startswith(("'", '"')):
+                raw_value = text[match.end() : end]
+                value: Any = raw_value
+                if value in ("true", "false"):
+                    value = value == "true"
+                else:
                     try:
                         value = ast.literal_eval(value)
                     except (SyntaxError, ValueError):
                         pass
+                start = match.start()
+                while start and (text[start - 1].isalnum() or text[start - 1] in "_-"):
+                    start -= 1
+                key = re.split(r"[\"'\s:=]", text[start : match.end()], maxsplit=1)[0]
+                if not self.sensitive(key, value):
+                    parts.append(raw_value)
+                    continue
                 parts.append(self.marker(value))
             parts.append(text[end:])
             text = "".join(parts)
@@ -165,7 +188,7 @@ class Redactor:
         if isinstance(value, dict):
             return self.mapping(
                 [
-                    (k, self.marker(v) if self.sensitive(k) else self.value(v))
+                    (k, self.marker(v) if self.sensitive(k, v) else self.value(v))
                     for k, v in value.items()
                 ]
             )

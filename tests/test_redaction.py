@@ -649,3 +649,50 @@ def test_package_versions_are_not_emails(text):
 )
 def test_alphabetic_email_domains_remain_redacted(text):
     assert text not in Redactor().text(text)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"is_secret": False, "has_password": True, "num_input_token": 5},
+        {"total_token": 42, "count_token": 3, "isSecret": True},
+    ],
+)
+def test_harmless_sensitive_metadata_is_preserved(payload):
+    from agentprobe.probe import _jsonable
+
+    redactor = Redactor()
+    assert redactor.value(payload) == payload
+    assert _jsonable(payload, redactor=redactor) == payload
+    assert redactor.text(repr(payload)) == repr(payload)
+    assert redactor.text(json.dumps(payload)) == json.dumps(payload)
+    with probe() as p:
+        result = p.run(lambda _: p.wrap(lambda data: data)(payload), "")
+    assert result.calls[0].args == [payload]
+    assert result.calls[0].value == repr(payload)
+
+
+@pytest.mark.parametrize(
+    "key", ["password", "token", "secret", "pin", "num_input_token", "is_secret"]
+)
+def test_explicit_sensitive_fields_still_hide_numeric_values(key):
+    redactor = Redactor(keys=[key])
+    assert redactor.value({key: 12345})[key] != 12345
+    assert "12345" not in redactor.text(f"{key}=12345")
+    assert redactor.value({key: False})[key] is not False
+
+
+@pytest.mark.parametrize("text", ["password=12345", "secret: 42", "password: reset link sent"])
+def test_ambiguous_sensitive_prose_stays_conservative(text):
+    assert "[REDACTED:secret#" in Redactor().text(text)
+
+
+def test_positional_metadata_and_custom_override():
+    def tool(num_input_token, is_secret):
+        return "ok"
+
+    for keys in [[], ["num_input_token", "is_secret"]]:
+        with probe(redact_keys=keys) as p:
+            result = p.run(lambda _: p.wrap(tool)(5, False), "")
+            result.assert_called_with("tool", 5, False)
+        assert (result.calls[0].args == [5, False]) is (not keys)

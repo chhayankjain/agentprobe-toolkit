@@ -733,7 +733,7 @@ def _jsonable(value: Any, _depth: int = 0, redactor: Redactor | None = None) -> 
             (
                 str(k),
                 redactor.marker(v)
-                if redactor and redactor.sensitive(str(k))
+                if redactor and redactor.sensitive(str(k), v)
                 else _jsonable(v, _depth + 1, redactor),
             )
             for k, v in value.items()
@@ -1102,7 +1102,7 @@ class ProbeResult:
                     if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
                 ]
                 for i, key in enumerate(names[: len(shown_args)]):
-                    if self._redactor.sensitive(key):
+                    if self._redactor.sensitive(key, args[i]):
                         shown_args[i] = self._redactor.marker(args[i])
         name = (
             f"tool {tool!r} called with args={_short(shown_args)}, "
@@ -1737,7 +1737,7 @@ class Probe:
         )
         return [
             self._redactor.marker(v)
-            if i < len(names) and self._redactor.sensitive(names[i])
+            if i < len(names) and self._redactor.sensitive(names[i], v)
             else _jsonable(v, redactor=self._redactor)
             for i, v in enumerate(args)
         ]
