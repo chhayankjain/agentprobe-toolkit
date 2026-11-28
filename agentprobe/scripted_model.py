@@ -33,6 +33,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from agentprobe._redaction import Redactor
 from agentprobe.errors import ProbeError
 from agentprobe.script import Step, ToolCall
 
@@ -171,7 +172,9 @@ class ScriptedModel:
         max_calls: int | None,
         allow_unused: bool,
         model_id: int,
+        redactor: Redactor | None = None,
     ) -> None:
+        self._redactor = redactor if redactor is not None else Redactor()
         if not steps:
             raise ProbeError("a scripted model needs at least one step")
         seen_ids: dict[str, int] = {}
@@ -198,7 +201,8 @@ class ScriptedModel:
                 )
             if s.times is None and i != len(steps):
                 raise ProbeError(
-                    f"step {i} ({s.describe()}) repeats forever, so the steps after it "
+                    f"step {i} ({s.describe(redactor=self._redactor)}) repeats forever, "
+                    "so the steps after it "
                     "could never run; make it the last step"
                 )
         if max_calls is not None and (
@@ -323,7 +327,7 @@ class ScriptedModel:
                 messages=messages,
                 tools_offered=tools_offered,
                 step=pos + 1,
-                step_description=step.describe(),
+                step_description=step.describe(redactor=self._redactor),
                 returned_content=served.content,
                 returned_tool_calls=[
                     {
@@ -393,13 +397,15 @@ class ScriptedModel:
                 for i, (step, n) in enumerate(zip(self._steps, self._delivered), start=1):
                     if step.times is None and n == 0:
                         out.append(
-                            f"scripted model {self._id}, step {i} ({step.describe()}) "
+                            f"scripted model {self._id}, step {i} "
+                            f"({step.describe(redactor=self._redactor)}) "
                             f"unused: {ended}"
                         )
                     elif step.times is not None and n < step.times:
                         used = "unused" if n == 0 else f"delivered {n} of {step.times}"
                         out.append(
-                            f"scripted model {self._id}, step {i} ({step.describe()}) "
+                            f"scripted model {self._id}, step {i} "
+                            f"({step.describe(redactor=self._redactor)}) "
                             f"{used}: {ended}"
                         )
             return out

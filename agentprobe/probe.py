@@ -347,9 +347,10 @@ class ToolScenarios:
         (``None`` = every call). Use it for wrong, stale or incomplete data."""
         count = _count("returns(times)", times, allow_none=True)
         label = "every call" if count is None else _first_calls(count)
+        shown = _short(value, 60, redactor=self._probe._redactor)
         self._probe._add_rule(
             self._tool,
-            f"{self._tool}: return {_short(value, 60)} for {label}",
+            f"{self._tool}: return {shown} for {label}",
             required,
             count,
             lambda i: (
@@ -1614,6 +1615,7 @@ class Probe:
                 max_calls=max_calls,
                 allow_unused=allow_unused,
                 model_id=len(self._models) + 1,
+                redactor=self._redactor,
             )
             self._models.append(m)
             return m

@@ -407,3 +407,65 @@ def test_secret_identity_matches_structured_and_text_fields():
     marker = redactor.value({"password": "opaque-value"})["password"]
     assert redactor.text('password="opaque-value"') == "password=" + marker
     assert redactor.text("password=" + marker) == "password=" + marker
+
+
+@pytest.mark.parametrize("redact", [True, False])
+def test_return_scenario_redacts_before_shortening(redact):
+    value = "x" * 48 + " " + SECRETS[0]
+    with probe(enforce=False, redact=redact) as p:
+        tool = p.wrap(lambda: "original")
+        p.on("<lambda>").returns(value, times=2)
+        result = p.run(lambda _: tool(), "")
+    assert result.answer == value
+    for report in [result.summary(), json.dumps(result.to_dict()), str(p.gate())]:
+        assert ("sk-aaa" in report) is (not redact)
+
+
+@pytest.mark.parametrize("kind", ["reply", "args", "raw_args"])
+@pytest.mark.parametrize("redact", [True, False])
+def test_script_description_redacts_before_shortening(kind, redact):
+    from agentprobe.testing import script
+
+    value = "x" * (28 if kind == "reply" else 38) + " " + SECRETS[0]
+    step = (
+        script.reply(value)
+        if kind == "reply"
+        else script.tool_call(
+            "lookup",
+            **({kind: {"q": value}} if kind == "args" else {kind: json.dumps({"q": value})}),
+        )
+    )
+    with probe(enforce=False, redact=redact) as p:
+        model = p.model(script.repeat(step, times=2))
+
+        def agent(_):
+            _, served = model._begin([], ["lookup"], "test")
+            model._end()
+            if kind == "reply":
+                assert served.content == value
+            else:
+                call = served.tool_calls[0][1]
+                assert (call.args if kind == "args" else json.loads(call.raw_args)) == {"q": value}
+            return "done"
+
+        result = p.run(agent, "")
+    for report in [result.summary(), json.dumps(result.to_dict()), str(p.gate())]:
+        assert ("sk-aaa" in report) is (not redact)
+
+
+def test_unused_descriptions_use_probe_custom_patterns_without_mutating_script():
+    from agentprobe.testing import script
+
+    value = "x" * 26 + " customer-12345678901234567890"
+    step = script.reply(value)
+    with probe(enforce=False, redact=[r"customer-\d+"]) as p:
+        p.model(step)
+        p.on("lookup").returns(value)
+        result = p.run(lambda _: "done", "")
+    for report in [result.summary(), json.dumps(result.to_dict()), str(p.gate())]:
+        assert "customer-" not in report
+    assert step.text == value
+    assert "customer-" in step.describe()
+    with probe(enforce=False, redact=False) as p:
+        p.model(step)
+        assert "customer-" in str(p.gate())
