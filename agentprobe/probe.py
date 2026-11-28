@@ -740,11 +740,13 @@ def _jsonable(value: Any, _depth: int = 0, redactor: Redactor | None = None) -> 
         ]
         return redactor.mapping(items) if redactor else dict(items)
     if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
-        return value.isoformat()
+        text = value.isoformat()
+        return redactor.text(text) if redactor else text
     if isinstance(value, enum.Enum):
         return _jsonable(value.value, _depth + 1, redactor)
     if isinstance(value, (decimal.Decimal, uuid.UUID, pathlib.PurePath)):
-        return str(value)
+        text = str(value)
+        return redactor.text(text) if redactor else text
     if isinstance(value, (bytes, bytearray, memoryview)):
         raw = bytes(value)
         return {"type": "bytes", "length": len(raw), "preview": raw[:32].hex()}

@@ -1,9 +1,13 @@
 """Reports conceal sensitive data without changing execution or evidence."""
 
+import datetime
+import decimal
 import json
+import pathlib
 import re
 import subprocess
 import sys
+import uuid
 
 import pytest
 
@@ -469,3 +473,60 @@ def test_unused_descriptions_use_probe_custom_patterns_without_mutating_script()
     with probe(enforce=False, redact=False) as p:
         p.model(step)
         assert "customer-" in str(p.gate())
+
+
+@pytest.mark.parametrize("redact", [True, False])
+@pytest.mark.parametrize(
+    "value",
+    [
+        pathlib.PurePath("/tmp/alice@example.com"),
+        uuid.UUID("12345678-1234-5678-1234-567812345678"),
+        decimal.Decimal("12345.6789"),
+        datetime.date(2026, 11, 28),
+        datetime.time(12, 34, 56),
+        datetime.datetime(2026, 11, 28, 12, 34, 56),
+    ],
+)
+def test_converted_values_redacted_in_standalone_call_exports(value, redact):
+    text = value.isoformat() if isinstance(value, (datetime.date, datetime.time)) else str(value)
+    rules = [re.escape(text)] if redact else False
+    payload = {"nested": [value]}
+    with probe(redact=rules) as p:
+
+        def tool(arg, *, data):
+            assert arg is value
+            assert data is payload
+            return "ok"
+
+        wrapped = p.wrap(tool)
+        result = p.run(lambda _: wrapped(value, data=payload), "")
+        result.assert_called_with("tool", value, data=payload)
+    wrapped(value, data=payload)
+    for call in [result.calls[0], p.calls[0], p.late_calls[0]]:
+        assert call.raw_args[0] is value
+        assert call.raw_kwargs["data"] is payload
+        exported = json.dumps(call.to_dict())
+        assert (text in exported) is (not redact)
+        assert call.args[0] == call.kwargs["data"]["nested"][0]
+    assert (text in json.dumps(result.to_dict())) is (not redact)
+
+
+def test_path_email_uses_default_redaction_in_call_snapshot():
+    value = pathlib.PurePath("/tmp/alice@example.com")
+    with probe() as p:
+        result = p.run(lambda _: p.wrap(lambda arg: "ok")(value), "")
+    assert "alice@example.com" not in json.dumps(result.calls[0].to_dict())
+    assert result.calls[0].args[0] == p._redactor.text(str(value))
+    assert "[REDACTED:email#" in result.calls[0].args[0]
+
+
+def test_non_sensitive_converted_values_keep_their_representation():
+    from agentprobe.probe import _jsonable
+
+    values = [
+        pathlib.PurePath("/tmp/report.txt"),
+        decimal.Decimal("12.34"),
+        uuid.UUID("12345678-1234-5678-1234-567812345678"),
+        datetime.date(2026, 11, 28),
+    ]
+    assert _jsonable(values, redactor=Redactor()) == _jsonable(values)
