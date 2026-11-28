@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from agentprobe._redaction import Redactor
-from agentprobe.testing import ProbeGateError, probe
+from agentprobe.testing import Probe, ProbeError, ProbeGateError, probe
 
 SECRETS = (
     "sk-" + "a" * 30,
@@ -163,7 +163,7 @@ def test_non_sensitive_data_unchanged():
 
 @pytest.mark.parametrize("kwargs", [{"redact": "abc"}, {"redact_keys": "pin"}, {"redact": ["["]}])
 def test_invalid_configuration(kwargs):
-    with pytest.raises((TypeError, re.error)):
+    with pytest.raises((TypeError, ProbeError)):
         probe(**kwargs)
 
 
@@ -696,3 +696,9 @@ def test_positional_metadata_and_custom_override():
             result = p.run(lambda _: p.wrap(tool)(5, False), "")
             result.assert_called_with("tool", 5, False)
         assert (result.calls[0].args == [5, False]) is (not keys)
+
+
+@pytest.mark.parametrize("factory", [probe, Probe])
+def test_invalid_redaction_pattern_raises_probe_error(factory):
+    with pytest.raises(ProbeError, match="invalid redaction pattern"):
+        factory(redact=["["])

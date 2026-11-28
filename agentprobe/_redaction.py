@@ -11,6 +11,8 @@ import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from agentprobe.errors import ProbeError
+
 Redact = bool | Sequence[str | re.Pattern[str]]
 _DEFAULT_KEYS = (
     "api_key",
@@ -67,7 +69,12 @@ class Redactor:
         self.keys = {_normalize(k) for k in _DEFAULT_KEYS} | self.custom_keys
         self.patterns = list(_PATTERNS)
         if not isinstance(redact, bool):
-            self.patterns.extend(("custom", re.compile(p)) for p in redact)
+            for pattern in redact:
+                try:
+                    compiled = re.compile(pattern)
+                except re.error as exc:
+                    raise ProbeError(f"invalid redaction pattern {pattern!r}: {exc}") from None
+                self.patterns.append(("custom", compiled))
         # Match key/value pairs in prose, JSON, and Python reprs, including quoted
         # values containing spaces. Keep the key visible to explain the removal.
         key_pattern = "|".join("[_-]*".join(map(re.escape, k)) for k in sorted(self.keys))
